@@ -4,7 +4,7 @@
 
 /* Public domain IBM CP437 8x8 bitmap font.
    Covers printable ASCII 0x20 (space) to 0x7E (~).
-   Each entry: 8 bytes, one row per byte, bit 7 = leftmost pixel. */
+   Each entry: 8 bytes, one row per byte, bit 0 = leftmost pixel. */
 const uint8_t font8x8[95][8] = {
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}, /* 0x20 space */
     {0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00}, /* 0x21 ! */
@@ -110,7 +110,7 @@ void font_draw_char(int x, int y, char c, uint32_t color, int scale) {
     for (int row = 0; row < 8; row++) {
         uint8_t bits = glyph[row];
         for (int col = 0; col < 8; col++) {
-            if (bits & (0x80u >> col))
+            if (bits & (1u << col))
                 renderer_draw_rect(x + col * scale, y + row * scale,
                                    scale, scale, color);
         }
