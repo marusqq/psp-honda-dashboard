@@ -223,7 +223,7 @@ void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int conn
     font_draw_str(200, 261, theme_current()->name, t->text_secondary, 1);
 
     /* Hotkey hints */
-    font_draw_str(360, 261, "L/R:MODE  X:THEME", t->text_secondary, 1);
+    font_draw_str(310, 261, "L/R:MODE  X:THEME  SEL+STA:CFG", t->text_secondary, 1);
 
     (void)vs;
 }

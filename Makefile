@@ -17,6 +17,7 @@ OBJS = \
 	src/ui/gauge.o \
 	src/ui/dashboard.o \
 	src/ui/themes.o \
+	src/ui/setup.o \
 	src/input/controls.o \
 	src/config/settings.o \
 	src/utils/log.o \

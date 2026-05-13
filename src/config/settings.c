@@ -11,7 +11,7 @@ void settings_defaults(Settings *s) {
     strncpy(s->obd_ip, VGATE_DEFAULT_IP, sizeof(s->obd_ip) - 1);
     s->obd_port        = VGATE_DEFAULT_PORT;
     s->poll_interval_ms = 200;
-    s->ap_config_idx   = 1;
+    s->ap_config_idx   = 0;  /* 0 = unconfigured, triggers setup wizard */
     s->theme           = THEME_OEM_HONDA;
     s->default_mode    = DASH_MODE_DIGITAL;
     s->use_metric      = 1;
