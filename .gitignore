@@ -1,0 +1,34 @@
+# Build outputs
+build/
+*.o
+*.a
+*.elf
+*.prx
+*.pbp
+EBOOT.PBP
+PARAM.SFO
+
+# PSPSDK artifacts
+*.d
+*.map
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# Secrets / config with credentials
+settings.bin
+*.env
+*.key
+
+# Log files from device
+*.log
+
+# Asset intermediates
+assets/textures/*.raw
