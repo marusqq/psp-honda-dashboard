@@ -27,6 +27,9 @@ settings.bin
 *.env
 *.key
 
+# Test binaries
+tests/test_runner
+
 # Log files from device
 *.log
 

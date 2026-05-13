@@ -10,9 +10,14 @@ static float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-void gauge_draw_analog(const GaugeDef *g, float value) {
+void gauge_draw_analog(GaugeDef *g, float value) {
     const Theme *t = theme_current();
-    float v = clampf(value, g->min_val, g->max_val);
+
+    /* Lerp toward target; factor 1.0 = instant, 0.15 = smooth */
+    float lerp = t->use_animations ? 0.15f : 1.0f;
+    g->anim_val += (value - g->anim_val) * lerp;
+
+    float v = clampf(g->anim_val, g->min_val, g->max_val);
 
     /* Outer ring */
     renderer_draw_arc(g->cx, g->cy, g->radius,

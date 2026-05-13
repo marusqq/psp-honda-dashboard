@@ -81,24 +81,25 @@ void dashboard_render_digital(const VehicleState *vs) {
 void dashboard_render_analog(const VehicleState *vs) {
     const Theme *t = theme_current();
 
-    /* Tachometer: center-left */
-    GaugeDef tach = {
+    /* Static so anim_val persists between frames for smooth animation */
+    static GaugeDef tach = {
         .cx = 136, .cy = 136, .radius = 110,
         .min_val = 0.0f, .max_val = 8000.0f, .redline = 6500.0f,
-        .start_angle = PI_F * 0.75f,   /* 135 deg */
-        .sweep_angle  = PI_F * 1.5f,   /* 270 deg sweep */
+        .start_angle = PI_F * 0.75f,
+        .sweep_angle  = PI_F * 1.5f,
+        .anim_val = 0.0f,
     };
     gauge_draw_analog(&tach, vs->rpm);
     gauge_draw_numeric(tach.cx - 30, tach.cy + tach.radius - 30,
                        vs->rpm, "%.0f", "rpm", t->text_primary, 1);
     gauge_draw_label(tach.cx - 16, tach.cy - 10, "RPM", t->text_secondary, 1);
 
-    /* Speedometer: center-right */
-    GaugeDef spd = {
+    static GaugeDef spd = {
         .cx = 344, .cy = 136, .radius = 110,
         .min_val = 0.0f, .max_val = 240.0f, .redline = 999.0f,
         .start_angle = PI_F * 0.75f,
         .sweep_angle  = PI_F * 1.5f,
+        .anim_val = 0.0f,
     };
     gauge_draw_analog(&spd, vs->speed_kmh);
     gauge_draw_numeric(spd.cx - 30, spd.cy + spd.radius - 30,

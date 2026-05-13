@@ -24,8 +24,9 @@ OBJS = \
 	src/utils/memory.o \
 	src/utils/font.o
 
+# INCDIR is expanded by build.mak with addprefix -I, so do NOT use -I$(INCDIR) here
 INCDIR   = include
-CFLAGS   = -O2 -G0 -Wall -Wextra -I$(INCDIR)
+CFLAGS   = -O2 -G0 -Wall -Wextra
 CXXFLAGS = $(CFLAGS) -fno-exceptions -fno-rtti
 ASFLAGS  = $(CFLAGS)
 
@@ -34,11 +35,11 @@ PSP_FW_VERSION  = 371
 
 LIBDIR  =
 LDFLAGS =
-LIBS    = -lpspnet -lpspnet_inet -lpspnet_apctl -lm
+# Don't duplicate -lpspnet/-lpspnet_apctl; build.mak appends them
+LIBS    = -lpspgu -lpspgum -lpsprtc -lpspnet_inet -lm
 
 EXTRA_TARGETS   = EBOOT.PBP
 PSP_EBOOT_TITLE = PSP OBD2 Dashboard
-PSP_EBOOT_ICON  = assets/ICON0.PNG
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak

@@ -22,7 +22,7 @@ void log_write(int level, const char *fmt, ...) {
     sceRtcGetCurrentTick(&tick);
     u32 ms = (u32)(tick / (sceRtcGetTickResolution() / 1000));
 
-    fprintf(g_log_fp, "[%08u][%s] ", ms, level_str[level]);
+    fprintf(g_log_fp, "[%08lu][%s] ", (unsigned long)ms, level_str[level]);
 
     va_list args;
     va_start(args, fmt);

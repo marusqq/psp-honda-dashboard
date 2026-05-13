@@ -58,7 +58,8 @@ int wifi_connect(int ap_config_idx) {
     /* Get assigned IP */
     union SceNetApctlInfo info;
     sceNetApctlGetInfo(PSP_NET_APCTL_INFO_IP, &info);
-    strncpy(g_status.ip, info.ip, sizeof(g_status.ip) - 1);
+    memcpy(g_status.ip, info.ip, sizeof(g_status.ip) - 1);
+    g_status.ip[sizeof(g_status.ip) - 1] = '\0';
     g_status.connected = 1;
 
     LOG_I("WiFi connected, IP: %s", g_status.ip);

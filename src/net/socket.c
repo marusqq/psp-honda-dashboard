@@ -4,7 +4,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
-#include <unistd.h>
 #include "net/socket.h"
 #include "utils/log.h"
 #include "utils/time.h"
@@ -29,7 +28,7 @@ int socket_connect(TcpSocket *sock) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port   = sceNetHtons((unsigned short)sock->port);
+    addr.sin_port   = htons((unsigned short)sock->port);
     sceNetInetInetAton(sock->ip, &addr.sin_addr);
 
     LOG_I("Connecting to %s:%d", sock->ip, sock->port);
@@ -62,9 +61,9 @@ int socket_recv(TcpSocket *sock, char *buf, int max_len, int timeout_ms) {
     if (!sock->connected || sock->fd < 0)
         return -1;
 
-    SceNetInetFdSet rdset;
-    SceNetInetFdZero(&rdset);
-    SceNetInetFdSet(sock->fd, &rdset);
+    fd_set rdset;
+    FD_ZERO(&rdset);
+    FD_SET(sock->fd, &rdset);
 
     struct SceNetInetTimeval tv;
     tv.tv_sec  = timeout_ms / 1000;
