@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <pspnet_apctl.h>
+#include <pspwlan.h>
+#include <psputility_netparam.h>
 #include "ui/setup.h"
 #include "ui/renderer.h"
 #include "ui/themes.h"
@@ -18,40 +21,65 @@
 
 typedef enum {
     SCR_WELCOME = 0,
-    SCR_NET_PICK,       /* scroll through AP slots 1-9                */
-    SCR_NET_TESTING,    /* connecting + OBD sanity check               */
-    SCR_NET_RESULT,     /* pass / fail result                          */
-    SCR_SETTINGS,       /* full settings menu (Select+Start entry)     */
-    SCR_NET_PICK_FROM_SETTINGS, /* network picker launched from settings */
+    SCR_NET_PICK,                  /* scroll through AP slots 1-9         */
+    SCR_NET_TESTING,               /* connecting + OBD sanity check        */
+    SCR_NET_RESULT,                /* pass / fail result                   */
+    SCR_SETTINGS,                  /* full settings menu (Select+Start)    */
+    SCR_NET_PICK_FROM_SETTINGS,    /* network picker launched from settings*/
 } Screen;
 
 typedef struct {
-    /* test results per slot (0=untested, 1=ok, -1=fail) */
-    int  slot_result[10];
-    char slot_ssid[10][32];
+    int  slot_result[10];    /* 0=untested, 1=ok, -1=fail */
+    char slot_ssid[10][64];  /* cached SSID (or "Empty" if slot unused)  */
+    int  slot_exists[10];    /* 1 if PSP has a saved config for this slot */
 } SlotCache;
 
-static Settings  *g_s            = NULL;
+static Settings  *g_s             = NULL;
 static int        g_settings_mode = 0;
-static Screen     g_screen       = SCR_WELCOME;
-static int        g_sel_slot     = 1;   /* 1-9 */
-static int        g_test_phase   = 0;   /* 0=idle, 1=start, 2=wifi, 3=obd */
-static int        g_test_ok      = 0;
+static Screen     g_screen        = SCR_WELCOME;
+static int        g_sel_slot      = 1;
+static int        g_test_phase    = 0;
+static int        g_test_ok       = 0;
 static char       g_test_msg[256] = {0};
-static int        g_settings_cur = 0;   /* cursor in settings menu */
+static int        g_settings_cur  = 0;
 static SlotCache  g_cache;
 static Screen     g_return_screen = SCR_SETTINGS;
 
-#define SLOT_COUNT 9
-#define SETTINGS_ITEMS 5  /* WiFi, Theme, Mode, Poll, Units */
+#define SLOT_COUNT     9
+#define SETTINGS_ITEMS 5
+
+/* ------------------------------------------------------------------ */
+/* SSID pre-load from PSP saved configs (no connection needed)        */
+/* ------------------------------------------------------------------ */
+
+static void preload_ssids(void) {
+    for (int i = 1; i <= SLOT_COUNT; i++) {
+        if (sceUtilityCheckNetParam(i) == 0) {
+            netData d;
+            memset(&d, 0, sizeof(d));
+            g_cache.slot_exists[i] = 1;
+            if (sceUtilityGetNetParam(i, PSP_NETPARAM_SSID, &d) == 0 &&
+                d.asString[0] != '\0') {
+                memcpy(g_cache.slot_ssid[i], d.asString,
+                       sizeof(g_cache.slot_ssid[i]) - 1);
+                g_cache.slot_ssid[i][sizeof(g_cache.slot_ssid[i]) - 1] = '\0';
+            } else {
+                snprintf(g_cache.slot_ssid[i], sizeof(g_cache.slot_ssid[i]),
+                         "Slot %d", i);
+            }
+        } else {
+            g_cache.slot_exists[i] = 0;
+            snprintf(g_cache.slot_ssid[i], sizeof(g_cache.slot_ssid[i]),
+                     "(empty)");
+        }
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-static const char *theme_name(ThemeID t) {
-    return g_themes[t].name;
-}
+static const char *theme_name(ThemeID t) { return g_themes[t].name; }
 static const char *mode_name(DashMode m) {
     static const char *n[] = {"Digital", "Analog", "Diagnostics", "Performance"};
     return n[m % DASH_MODE_COUNT];
@@ -74,6 +102,7 @@ static void draw_hint(const char *h) {
     renderer_draw_rect(0, 258, SCREEN_W, 14, RGBA(10, 10, 10, 255));
     font_draw_str(8, 261, h, theme_current()->text_secondary, 1);
 }
+
 /* ------------------------------------------------------------------ */
 /* Sanity check: WiFi + OBD                                           */
 /* ------------------------------------------------------------------ */
@@ -82,31 +111,30 @@ static void run_test(int slot) {
     WifiStatus ws;
     wifi_get_status(&ws);
 
-    /* Disconnect if already connected to a different network */
     if (ws.connected)
         wifi_shutdown();
 
-    snprintf(g_test_msg, sizeof(g_test_msg), "Connecting to slot %d...", slot);
-    LOG_I("Setup: testing slot %d", slot);
+    snprintf(g_test_msg, sizeof(g_test_msg), "Connecting to %s...",
+             g_cache.slot_ssid[slot]);
+    LOG_I("Setup: testing slot %d (%s)", slot, g_cache.slot_ssid[slot]);
 
     if (wifi_init() != 0 || wifi_connect(slot) != 0) {
-        snprintf(g_test_msg, sizeof(g_test_msg), "Slot %d: WiFi connection failed", slot);
+        snprintf(g_test_msg, sizeof(g_test_msg),
+                 "WiFi connection failed for: %s", g_cache.slot_ssid[slot]);
         g_cache.slot_result[slot] = -1;
         g_test_ok = 0;
         return;
     }
 
-    /* Read SSID of the network we just connected to */
+    /* Confirm actual connected SSID (may differ from saved name) */
     union SceNetApctlInfo info;
-    if (sceNetApctlGetInfo(PSP_NET_APCTL_INFO_SSID, &info) == 0) {
+    if (sceNetApctlGetInfo(PSP_NET_APCTL_INFO_SSID, &info) == 0 &&
+        ((const char *)info.ssid)[0] != '\0') {
         memcpy(g_cache.slot_ssid[slot], (const char *)info.ssid,
                sizeof(g_cache.slot_ssid[slot]) - 1);
         g_cache.slot_ssid[slot][sizeof(g_cache.slot_ssid[slot]) - 1] = '\0';
-    } else {
-        snprintf(g_cache.slot_ssid[slot], sizeof(g_cache.slot_ssid[slot]), "slot %d", slot);
     }
 
-    /* Try reaching the OBD adapter */
     snprintf(g_test_msg, sizeof(g_test_msg), "Checking OBD at %s:%d...",
              g_s->obd_ip, g_s->obd_port);
 
@@ -114,7 +142,7 @@ static void run_test(int slot) {
     socket_init(&sock, g_s->obd_ip, g_s->obd_port);
     if (socket_connect(&sock) != 0) {
         snprintf(g_test_msg, sizeof(g_test_msg),
-                 "WiFi OK (%s) but OBD unreachable at %s:%d",
+                 "WiFi OK (%s) - OBD unreachable at %s:%d",
                  g_cache.slot_ssid[slot], g_s->obd_ip, g_s->obd_port);
         g_cache.slot_result[slot] = -1;
         g_test_ok = 0;
@@ -122,26 +150,19 @@ static void run_test(int slot) {
         return;
     }
 
-    /* Quick ELM327 handshake */
     char resp[ELM327_RESP_MAX];
     elm327_send_cmd(&sock, "ATI", resp, sizeof(resp), 2000);
     socket_close(&sock);
 
+    g_cache.slot_result[slot] = 1;
+    g_test_ok = 1;
     if (strlen(resp) == 0) {
         snprintf(g_test_msg, sizeof(g_test_msg),
-                 "WiFi OK (%s) - OBD connected but no ELM response",
-                 g_cache.slot_ssid[slot]);
-        /* Partial success - adapter reachable but ELM not responding yet */
-        g_cache.slot_result[slot] = 1;
-        g_test_ok = 1;
-        snprintf(g_test_msg, sizeof(g_test_msg),
-                 "OK  Network: %s  Adapter: %s:%d",
+                 "OK  %s  Adapter: %s:%d",
                  g_cache.slot_ssid[slot], g_s->obd_ip, g_s->obd_port);
     } else {
-        g_cache.slot_result[slot] = 1;
-        g_test_ok = 1;
         snprintf(g_test_msg, sizeof(g_test_msg),
-                 "OK  Network: %s  ELM: %s",
+                 "OK  %s  ELM: %s",
                  g_cache.slot_ssid[slot], resp);
     }
 
@@ -163,6 +184,8 @@ void setup_init(Settings *s, int is_settings_mode) {
     memset(&g_cache, 0, sizeof(g_cache));
     memset(g_test_msg, 0, sizeof(g_test_msg));
 
+    preload_ssids();
+
     g_screen = is_settings_mode ? SCR_SETTINGS : SCR_WELCOME;
     LOG_I("Setup init (settings_mode=%d)", is_settings_mode);
 }
@@ -171,12 +194,22 @@ SetupResult setup_update(InputState *input) {
     switch (g_screen) {
 
     /* ---- WELCOME ---- */
-    case SCR_WELCOME:
-        if (input_pressed(input, BTN_CROSS) || input_pressed(input, BTN_START))
-            g_screen = SCR_NET_PICK;
+    case SCR_WELCOME: {
+        int wlan_on = sceWlanGetSwitchState();
+
+        /* Triangle = skip setup, go straight to dashboard (no OBD) */
+        if (input_pressed(input, BTN_TRIANGLE))
+            return SETUP_RESULT_SKIP;
+
+        /* Only allow proceeding when WLAN switch is on */
+        if (wlan_on) {
+            if (input_pressed(input, BTN_CROSS) || input_pressed(input, BTN_START))
+                g_screen = SCR_NET_PICK;
+        }
         if (g_settings_mode && input_pressed(input, BTN_CIRCLE))
             return SETUP_RESULT_CANCEL;
         break;
+    }
 
     /* ---- NETWORK PICKER ---- */
     case SCR_NET_PICK:
@@ -189,7 +222,7 @@ SetupResult setup_update(InputState *input) {
         if (input_pressed(input, BTN_CROSS)) {
             g_return_screen = g_screen;
             g_screen = SCR_NET_TESTING;
-            g_test_phase = 1;   /* trigger test next render cycle */
+            g_test_phase = 1;
         }
 
         if (input_pressed(input, BTN_CIRCLE)) {
@@ -197,11 +230,9 @@ SetupResult setup_update(InputState *input) {
                 g_screen = SCR_SETTINGS;
             else if (g_settings_mode)
                 return SETUP_RESULT_CANCEL;
-            /* else: ignore cancel on first-launch wizard */
         }
 
         if (input_pressed(input, BTN_START)) {
-            /* Confirm current slot even without test */
             g_s->ap_config_idx = g_sel_slot;
             if (g_screen == SCR_NET_PICK_FROM_SETTINGS)
                 g_screen = SCR_SETTINGS;
@@ -212,9 +243,8 @@ SetupResult setup_update(InputState *input) {
 
     /* ---- TESTING ---- */
     case SCR_NET_TESTING:
-        if (g_test_phase == 1) {
-            g_test_phase = 2;  /* will run test in render */
-        }
+        if (g_test_phase == 1)
+            g_test_phase = 2;
         break;
 
     /* ---- RESULT ---- */
@@ -227,7 +257,7 @@ SetupResult setup_update(InputState *input) {
                 else
                     return SETUP_RESULT_DONE;
             } else {
-                g_screen = g_return_screen;  /* back to picker to try another */
+                g_screen = g_return_screen;
             }
         }
         if (input_pressed(input, BTN_CIRCLE))
@@ -243,33 +273,31 @@ SetupResult setup_update(InputState *input) {
 
         if (input_pressed(input, BTN_CROSS)) {
             switch (g_settings_cur) {
-            case 0: /* WiFi - open picker */
+            case 0:
                 g_screen = SCR_NET_PICK_FROM_SETTINGS;
                 break;
-            case 1: /* Theme */
+            case 1:
                 g_s->theme = (ThemeID)((g_s->theme + 1) % THEME_COUNT);
                 theme_set(g_s->theme);
                 break;
-            case 2: /* Mode */
+            case 2:
                 g_s->default_mode = (DashMode)((g_s->default_mode + 1) % DASH_MODE_COUNT);
                 break;
-            case 3: /* Poll interval */
-                if (g_s->poll_interval_ms <= 100)       g_s->poll_interval_ms = 200;
-                else if (g_s->poll_interval_ms <= 200)  g_s->poll_interval_ms = 500;
-                else                                    g_s->poll_interval_ms = 100;
+            case 3:
+                if (g_s->poll_interval_ms <= 100)      g_s->poll_interval_ms = 200;
+                else if (g_s->poll_interval_ms <= 200) g_s->poll_interval_ms = 500;
+                else                                   g_s->poll_interval_ms = 100;
                 break;
-            case 4: /* Units */
+            case 4:
                 g_s->use_metric = !g_s->use_metric;
                 break;
             }
         }
 
-        /* Start = save and exit */
         if (input_pressed(input, BTN_START)) {
             settings_save(g_s);
             return SETUP_RESULT_DONE;
         }
-        /* Circle = exit without save */
         if (input_pressed(input, BTN_CIRCLE))
             return SETUP_RESULT_CANCEL;
         break;
@@ -290,13 +318,11 @@ void setup_render(void) {
     const Theme *t = theme_current();
     renderer_clear(t->bg);
 
-    /* Run blocking test here so "Testing..." is visible for at least 1 frame */
     if (g_screen == SCR_NET_TESTING && g_test_phase == 2) {
         draw_title("NETWORK TEST", t->accent);
         font_draw_str(16, 60, "Connecting - please wait...", t->text_secondary, 1);
         font_draw_str(16, 80, g_test_msg[0] ? g_test_msg : "Starting...",
                       t->text_primary, 1);
-        /* Let this frame render, then we'll actually test on next call */
         g_test_phase = 3;
         return;
     }
@@ -304,51 +330,74 @@ void setup_render(void) {
         run_test(g_sel_slot);
         g_test_phase = 0;
         g_screen = SCR_NET_RESULT;
-        /* Fall through to render result immediately */
     }
 
     switch (g_screen) {
 
-    case SCR_WELCOME:
+    case SCR_WELCOME: {
+        int wlan_on = sceWlanGetSwitchState();
         draw_title("PSP OBD2 DASHBOARD  SETUP", t->accent);
         font_draw_str(16, 40, "First-time setup", t->text_primary, 2);
         font_draw_str(16, 72, "You need to select the WiFi network", t->text_secondary, 1);
         font_draw_str(16, 88, "used by your OBD adapter (V-link).", t->text_secondary, 1);
+
         font_draw_str(16, 110, "Make sure:", t->text_primary, 1);
         font_draw_str(24, 126, "1. OBD adapter plugged into car", t->text_secondary, 1);
-        font_draw_str(24, 142, "2. PSP WiFi switch ON", t->text_secondary, 1);
-        font_draw_str(24, 158, "3. V-link network saved in PSP", t->text_secondary, 1);
-        font_draw_str(24, 174, "   Settings > Network Settings", t->text_secondary, 1);
-        draw_hint("X / Start: Begin setup");
+        font_draw_str(24, 142, "3. V-link network saved in PSP", t->text_secondary, 1);
+        font_draw_str(24, 158, "   Settings > Network Settings", t->text_secondary, 1);
+
+        /* WLAN switch status - prominent if off */
+        if (wlan_on) {
+            font_draw_str(24, 126 - 18, "2. WLAN switch: ON", COLOR_GREEN, 1);
+            draw_hint("X / Start: Begin setup   Triangle: Skip (demo)");
+        } else {
+            renderer_draw_rect(0, 192, SCREEN_W, 32, RGBA(60, 10, 10, 255));
+            font_draw_str(16, 196, "WLAN switch is OFF - slide it ON to continue",
+                          t->danger, 1);
+            font_draw_str(24, 126 - 18, "2. WLAN switch: OFF", t->danger, 1);
+            draw_hint("Turn WLAN switch ON to begin   Triangle: Skip (demo)");
+        }
         break;
+    }
 
     case SCR_NET_PICK:
     case SCR_NET_PICK_FROM_SETTINGS:
-        draw_title("SELECT WIFI NETWORK (AP SLOT)", t->accent);
-        font_draw_str(16, 24, "Choose the slot configured for your OBD adapter,", t->text_secondary, 1);
-        font_draw_str(16, 36, "then press X to test it.", t->text_secondary, 1);
+        draw_title("SELECT WIFI NETWORK", t->accent);
+        font_draw_str(16, 24, "Choose your OBD adapter network, then press X to test.",
+                      t->text_secondary, 1);
 
         for (int i = 1; i <= SLOT_COUNT; i++) {
-            int y = 52 + (i - 1) * 18;
+            int y = 38 + (i - 1) * 22;
             int sel = (i == g_sel_slot);
             uint32_t row_col = sel ? t->text_primary : t->text_secondary;
 
-            char label[24];
-            snprintf(label, sizeof(label), "Slot %d", i);
-
-            char status[64] = "";
-            if (g_cache.slot_result[i] == 1)
-                snprintf(status, sizeof(status), "OK - %s", g_cache.slot_ssid[i]);
+            /* dim empty slots */
+            uint32_t ssid_col;
+            if (!g_cache.slot_exists[i])
+                ssid_col = RGBA(60, 60, 60, 255);
+            else if (g_cache.slot_result[i] == 1)
+                ssid_col = COLOR_GREEN;
             else if (g_cache.slot_result[i] == -1)
-                snprintf(status, sizeof(status), "FAIL");
+                ssid_col = t->danger;
+            else
+                ssid_col = row_col;
 
-            if (sel) renderer_draw_rect(0, y, SCREEN_W, 16, RGBA(40, 40, 40, 255));
-            if (sel) font_draw_str(6, y + 3, ">", t->accent, 1);
+            if (sel) renderer_draw_rect(0, y, SCREEN_W, 20, RGBA(40, 40, 40, 255));
+            if (sel) font_draw_str(4, y + 5, ">", t->accent, 1);
 
-            uint32_t st_col = (g_cache.slot_result[i] == 1) ? COLOR_GREEN :
-                              (g_cache.slot_result[i] == -1) ? t->danger : t->text_secondary;
-            font_draw_str(18, y + 3, label, row_col, 1);
-            font_draw_str(90, y + 3, status, st_col, 1);
+            /* slot number */
+            char num[4];
+            snprintf(num, sizeof(num), "%d.", i);
+            font_draw_str(14, y + 5, num, t->text_secondary, 1);
+
+            /* SSID name */
+            font_draw_str(34, y + 5, g_cache.slot_ssid[i], ssid_col, 1);
+
+            /* test badge */
+            if (g_cache.slot_result[i] == 1)
+                font_draw_str(360, y + 5, "[OK]", COLOR_GREEN, 1);
+            else if (g_cache.slot_result[i] == -1)
+                font_draw_str(360, y + 5, "[FAIL]", t->danger, 1);
         }
         draw_hint("UP/DOWN: Select  X: Test  Start: Confirm  O: Back");
         break;
@@ -364,10 +413,8 @@ void setup_render(void) {
         draw_title("TEST RESULT", g_test_ok ? COLOR_GREEN : t->danger);
 
         uint32_t res_col = g_test_ok ? COLOR_GREEN : t->danger;
-        const char *res_str = g_test_ok ? "SUCCESS" : "FAILED";
-        font_draw_str(16, 36, res_str, res_col, 2);
+        font_draw_str(16, 36, g_test_ok ? "SUCCESS" : "FAILED", res_col, 2);
 
-        /* Wrap long test_msg across multiple lines */
         {
             char tmp[96];
             strncpy(tmp, g_test_msg, sizeof(tmp) - 1);
@@ -382,26 +429,25 @@ void setup_render(void) {
                 font_draw_str(16, y, line, t->text_primary, 1);
                 p += i + (p[i] == '\n' ? 1 : 0);
                 y += 14;
-                if (i == 51) { /* wrap at word boundary next iter */ }
             }
         }
 
         if (g_test_ok)
             draw_hint("X: Use this network  O: Back to list");
         else
-            draw_hint("X / O: Back to list  (try another slot)");
+            draw_hint("X / O: Back to list  (try another network)");
         break;
     }
 
     case SCR_SETTINGS: {
         draw_title("SETTINGS", t->accent);
 
-        char wifi_val[48];
-        if (g_cache.slot_result[g_s->ap_config_idx] == 1)
-            snprintf(wifi_val, sizeof(wifi_val), "Slot %d (%s)",
-                     g_s->ap_config_idx, g_cache.slot_ssid[g_s->ap_config_idx]);
+        char wifi_val[64];
+        int idx = g_s->ap_config_idx;
+        if (idx >= 1 && idx <= SLOT_COUNT && g_cache.slot_exists[idx])
+            snprintf(wifi_val, sizeof(wifi_val), "%s", g_cache.slot_ssid[idx]);
         else
-            snprintf(wifi_val, sizeof(wifi_val), "Slot %d", g_s->ap_config_idx);
+            snprintf(wifi_val, sizeof(wifi_val), "Not configured");
 
         char poll_val[24];
         snprintf(poll_val, sizeof(poll_val), "%s", poll_name(g_s->poll_interval_ms));
@@ -443,6 +489,4 @@ void setup_render(void) {
     }
 }
 
-void setup_shutdown(void) {
-    /* nothing to free */
-}
+void setup_shutdown(void) { /* nothing to free */ }

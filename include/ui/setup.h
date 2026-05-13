@@ -6,6 +6,7 @@ typedef enum {
     SETUP_RESULT_CONTINUE = 0,
     SETUP_RESULT_DONE,
     SETUP_RESULT_CANCEL,
+    SETUP_RESULT_SKIP,   /* user skipped setup, run dashboard without OBD */
 } SetupResult;
 
 /* is_settings_mode=0: first-launch wizard

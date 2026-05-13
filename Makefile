@@ -37,7 +37,7 @@ PSP_FW_VERSION  = 371
 LIBDIR  =
 LDFLAGS =
 # Don't duplicate -lpspnet/-lpspnet_apctl; build.mak appends them
-LIBS    = -lpspgu -lpspgum -lpsprtc -lpspnet_inet -lm
+LIBS    = -lpspgu -lpspgum -lpsprtc -lpspnet_inet -lpspwlan -lpsputility -lm
 
 EXTRA_TARGETS   = EBOOT.PBP
 PSP_EBOOT_TITLE = PSP OBD2 Dashboard

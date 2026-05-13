@@ -1,4 +1,5 @@
 #include <string.h>
+#include <math.h>
 #include <pspkernel.h>
 #include "app.h"
 #include "net/wifi.h"
@@ -24,8 +25,8 @@
 #define TARGET_FPS     30
 #define FRAME_TIME_MS  (1000 / TARGET_FPS)
 
-static volatile int  g_running  = 0;
-static AppState      g_state    = APP_STATE_INIT;
+static volatile int  g_running   = 0;
+static AppState      g_state     = APP_STATE_INIT;
 static Settings      g_settings;
 static TcpSocket     g_sock;
 static ReconnectState g_reconnect;
@@ -35,7 +36,8 @@ static PidScheduler  g_sched;
 static MovingAvg     g_filters[PID_COUNT];
 static DashMode      g_dash_mode;
 static InputState    g_input;
-static int           g_in_setup = 0;
+static int           g_in_setup  = 0;
+static int           g_demo_mode = 0;  /* 1 = skipped setup, show fake data */
 
 /* ------------------------------------------------------------------ */
 
@@ -60,24 +62,36 @@ static void leave_setup(SetupResult result) {
     g_in_setup = 0;
     setup_shutdown();
 
+    if (result == SETUP_RESULT_SKIP) {
+        /* User skipped setup - run dashboard with simulated demo data */
+        g_demo_mode = 1;
+        theme_set(g_settings.theme);
+        g_dash_mode = g_settings.default_mode;
+        memset(&g_dtc, 0, sizeof(g_dtc));
+        g_state = APP_STATE_RUNNING;
+        LOG_I("Setup skipped, entering demo mode");
+        return;
+    }
+
     if (result == SETUP_RESULT_DONE) {
+        g_demo_mode = 0;
         theme_set(g_settings.theme);
         g_dash_mode = g_settings.default_mode;
         pid_scheduler_init(&g_sched, g_settings.poll_interval_ms);
 
-        /* WiFi was connected by setup sanity check - jump straight to OBD */
         socket_init(&g_sock, g_settings.obd_ip, g_settings.obd_port);
         reconnect_reset(&g_reconnect);
         memset(&g_dtc, 0, sizeof(g_dtc));
         g_state = APP_STATE_OBD_CONNECTING;
         LOG_I("Setup done, connecting to OBD");
     } else {
-        /* Cancelled - return to wherever we were */
-        if (g_state == APP_STATE_RUNNING) {
-            /* Reconnect since we closed the socket */
+        /* Cancelled */
+        if (g_demo_mode) {
+            /* Was in demo, return to it */
+            g_state = APP_STATE_RUNNING;
+        } else if (g_state == APP_STATE_RUNNING) {
             g_state = APP_STATE_OBD_CONNECTING;
         } else {
-            /* Was in setup from init - treat cancel as retry */
             g_state = APP_STATE_OBD_CONNECTING;
         }
     }
@@ -150,6 +164,25 @@ static void handle_input(void) {
 }
 
 /* ------------------------------------------------------------------ */
+
+/* Animate fake vehicle data so demo mode looks alive */
+static void simulate_demo(void) {
+    float t = (float)time_now_ms() / 1000.0f;
+
+    /* RPM: slow sine 800..5500, with occasional high-rev burst */
+    float rpm_norm = (sinf(t * 0.6f) * 0.5f + 0.5f);  /* 0..1 */
+    float burst    = (sinf(t * 0.17f) > 0.7f) ? 0.35f : 0.0f;
+    rpm_norm = rpm_norm * (1.0f - burst) + burst;
+    if (rpm_norm > 1.0f) rpm_norm = 1.0f;
+
+    g_vehicle.rpm            = 800.0f + rpm_norm * 5200.0f;
+    g_vehicle.speed_kmh      = rpm_norm * rpm_norm * 130.0f;
+    g_vehicle.throttle_pct   = rpm_norm * 72.0f;
+    g_vehicle.engine_load_pct= 18.0f + rpm_norm * 58.0f;
+    g_vehicle.coolant_temp_c = 87.0f + sinf(t * 0.08f) * 3.5f;
+    g_vehicle.iat_c          = 27.0f + sinf(t * 0.04f) * 2.0f;
+    g_vehicle.voltage_v      = 14.1f + sinf(t * 0.25f) * 0.15f;
+}
 
 static void poll_obd(void) {
     if (!socket_is_connected(&g_sock))
@@ -250,21 +283,26 @@ void app_run(void) {
             break;
 
         case APP_STATE_RUNNING:
-            poll_obd();
+            if (g_demo_mode) {
+                simulate_demo();
+            } else {
+                poll_obd();
 
-            if (!socket_is_connected(&g_sock)) {
-                LOG_W("OBD connection lost");
-                g_state = APP_STATE_OBD_CONNECTING;
+                if (!socket_is_connected(&g_sock)) {
+                    LOG_W("OBD connection lost");
+                    g_state = APP_STATE_OBD_CONNECTING;
+                }
+
+                if (!g_dtc.read_ok && socket_is_connected(&g_sock))
+                    dtc_read(&g_sock, &g_dtc);
             }
-
-            if (!g_dtc.read_ok && socket_is_connected(&g_sock))
-                dtc_read(&g_sock, &g_dtc);
 
             renderer_begin_frame();
             renderer_clear(theme_current()->bg);
             dashboard_render(&g_vehicle, &g_dtc, g_dash_mode);
             dashboard_render_status_bar(&g_vehicle, g_dash_mode,
-                                        socket_is_connected(&g_sock));
+                                        g_demo_mode ? 2
+                                                    : socket_is_connected(&g_sock));
             renderer_end_frame();
             break;
 

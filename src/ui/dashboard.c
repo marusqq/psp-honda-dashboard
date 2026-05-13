@@ -215,9 +215,12 @@ void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int conn
     /* Mode indicator */
     font_draw_str(4, 261, mode_names[mode], t->accent, 1);
 
-    /* Connection status */
-    uint32_t conn_col = connected ? COLOR_GREEN : t->danger;
-    font_draw_str(80, 261, connected ? "OBD OK" : "NO OBD", conn_col, 1);
+    /* Connection status (2 = demo mode) */
+    uint32_t conn_col = (connected == 2) ? t->warn :
+                        (connected == 1) ? COLOR_GREEN : t->danger;
+    const char *conn_str = (connected == 2) ? "DEMO" :
+                           (connected == 1) ? "OBD OK" : "NO OBD";
+    font_draw_str(80, 261, conn_str, conn_col, 1);
 
     /* Theme name */
     font_draw_str(200, 261, theme_current()->name, t->text_secondary, 1);
