@@ -10,6 +10,12 @@ static float *field_ptr(VehicleState *s, PidIndex f) {
         case PID_IAT:          return &s->iat_c;
         case PID_ENGINE_LOAD:  return &s->engine_load_pct;
         case PID_VOLTAGE:      return &s->voltage_v;
+        case PID_STFT:         return &s->stft_pct;
+        case PID_LTFT:         return &s->ltft_pct;
+        case PID_TIMING_ADV:   return &s->timing_adv_deg;
+        case PID_RUNTIME:      return &s->runtime_s;
+        case PID_FUEL_LEVEL:   return &s->fuel_level_pct;
+        case PID_AMBIENT_TEMP: return &s->ambient_temp_c;
         default:               return NULL;
     }
 }
@@ -20,18 +26,15 @@ void telemetry_init(VehicleState *state) {
 
 void telemetry_update(VehicleState *state, PidIndex field, float value, uint32_t now_ms) {
     float *fp = field_ptr(state, field);
-    if (!fp)
-        return;
+    if (!fp) return;
     *fp = value;
     state->last_update_ms[field] = now_ms;
     state->valid[field] = 1;
 }
 
 int telemetry_is_stale(const VehicleState *state, PidIndex field, uint32_t now_ms) {
-    if (!state->valid[field])
-        return 1;
-    uint32_t age = now_ms - state->last_update_ms[field];
-    return age > TELEMETRY_STALE_MS;
+    if (!state->valid[field]) return 1;
+    return (now_ms - state->last_update_ms[field]) > TELEMETRY_STALE_MS;
 }
 
 float telemetry_get(const VehicleState *state, PidIndex field) {
@@ -43,6 +46,12 @@ float telemetry_get(const VehicleState *state, PidIndex field) {
         case PID_IAT:          return state->iat_c;
         case PID_ENGINE_LOAD:  return state->engine_load_pct;
         case PID_VOLTAGE:      return state->voltage_v;
+        case PID_STFT:         return state->stft_pct;
+        case PID_LTFT:         return state->ltft_pct;
+        case PID_TIMING_ADV:   return state->timing_adv_deg;
+        case PID_RUNTIME:      return state->runtime_s;
+        case PID_FUEL_LEVEL:   return state->fuel_level_pct;
+        case PID_AMBIENT_TEMP: return state->ambient_temp_c;
         default:               return 0.0f;
     }
 }

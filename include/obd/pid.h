@@ -9,6 +9,13 @@ typedef enum {
     PID_IAT,
     PID_ENGINE_LOAD,
     PID_VOLTAGE,
+    /* extended */
+    PID_STFT,          /* short-term fuel trim bank 1, % */
+    PID_LTFT,          /* long-term  fuel trim bank 1, % */
+    PID_TIMING_ADV,    /* ignition timing advance, degrees BTDC */
+    PID_RUNTIME,       /* engine run time since start, seconds */
+    PID_FUEL_LEVEL,    /* fuel tank level, %  */
+    PID_AMBIENT_TEMP,  /* ambient air temperature, °C */
     PID_COUNT
 } PidIndex;
 

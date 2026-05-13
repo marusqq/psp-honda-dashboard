@@ -7,6 +7,8 @@ typedef enum {
     DASH_MODE_ANALOG,
     DASH_MODE_DIAGNOSTICS,
     DASH_MODE_PERFORMANCE,
+    DASH_MODE_ENGINE,   /* fuel trims, timing advance, ECU internals */
+    DASH_MODE_TRIP,     /* runtime, fuel level, ambient temp, session stats */
     DASH_MODE_COUNT
 } DashMode;
 
@@ -27,4 +29,7 @@ void dashboard_render_digital(const VehicleState *vs);
 void dashboard_render_analog(const VehicleState *vs);
 void dashboard_render_diagnostics(const VehicleState *vs, const DtcList *dtc);
 void dashboard_render_performance(const VehicleState *vs, PerfState *perf);
+void dashboard_render_engine(const VehicleState *vs);
+void dashboard_render_trip(const VehicleState *vs);
+void dashboard_trip_reset_session(void);
 void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int connected);

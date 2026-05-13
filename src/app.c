@@ -161,27 +161,43 @@ static void handle_input(void) {
         ThemeID next = (ThemeID)((theme_get() + 1) % THEME_COUNT);
         theme_set(next);
     }
+
+    /* Triangle on TRIP screen: reset session peak values */
+    if (g_dash_mode == DASH_MODE_TRIP && input_pressed(&g_input, BTN_TRIANGLE))
+        dashboard_trip_reset_session();
 }
 
 /* ------------------------------------------------------------------ */
 
 /* Animate fake vehicle data so demo mode looks alive */
 static void simulate_demo(void) {
+    static uint32_t demo_start_ms = 0;
+    if (demo_start_ms == 0) demo_start_ms = time_now_ms();
+
     float t = (float)time_now_ms() / 1000.0f;
+    float elapsed = (float)(time_now_ms() - demo_start_ms) / 1000.0f;
 
     /* RPM: slow sine 800..5500, with occasional high-rev burst */
-    float rpm_norm = (sinf(t * 0.6f) * 0.5f + 0.5f);  /* 0..1 */
+    float rpm_norm = (sinf(t * 0.6f) * 0.5f + 0.5f);
     float burst    = (sinf(t * 0.17f) > 0.7f) ? 0.35f : 0.0f;
     rpm_norm = rpm_norm * (1.0f - burst) + burst;
     if (rpm_norm > 1.0f) rpm_norm = 1.0f;
 
-    g_vehicle.rpm            = 800.0f + rpm_norm * 5200.0f;
-    g_vehicle.speed_kmh      = rpm_norm * rpm_norm * 130.0f;
-    g_vehicle.throttle_pct   = rpm_norm * 72.0f;
-    g_vehicle.engine_load_pct= 18.0f + rpm_norm * 58.0f;
-    g_vehicle.coolant_temp_c = 87.0f + sinf(t * 0.08f) * 3.5f;
-    g_vehicle.iat_c          = 27.0f + sinf(t * 0.04f) * 2.0f;
-    g_vehicle.voltage_v      = 14.1f + sinf(t * 0.25f) * 0.15f;
+    g_vehicle.rpm             = 800.0f  + rpm_norm * 5200.0f;
+    g_vehicle.speed_kmh       = rpm_norm * rpm_norm * 130.0f;
+    g_vehicle.throttle_pct    = rpm_norm * 72.0f;
+    g_vehicle.engine_load_pct = 18.0f   + rpm_norm * 58.0f;
+    g_vehicle.coolant_temp_c  = 87.0f   + sinf(t * 0.08f) * 3.5f;
+    g_vehicle.iat_c           = 27.0f   + sinf(t * 0.04f) * 2.0f;
+    g_vehicle.voltage_v       = 14.1f   + sinf(t * 0.25f) * 0.15f;
+
+    /* Extended fields */
+    g_vehicle.stft_pct        = sinf(t * 1.3f) * 4.5f;          /* -4.5..+4.5% normal */
+    g_vehicle.ltft_pct        = sinf(t * 0.12f) * 2.5f;         /* slow drift ±2.5%   */
+    g_vehicle.timing_adv_deg  = 12.0f + rpm_norm * 18.0f;       /* more advance w/ RPM */
+    g_vehicle.runtime_s       = elapsed;
+    g_vehicle.fuel_level_pct  = 73.0f - elapsed * 0.003f;       /* slowly depletes    */
+    g_vehicle.ambient_temp_c  = 19.5f + sinf(t * 0.02f) * 1.5f;
 }
 
 static void poll_obd(void) {
