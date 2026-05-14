@@ -20,7 +20,10 @@ int dtc_read(TcpSocket *sock, DtcList *out) {
     if (n <= 0)
         return -1;
 
-    if (strstr(resp, "NO DATA") || strstr(resp, "43 00")) {
+    if (strstr(resp, "NO DATA")         || strstr(resp, "43 00")   ||
+        strstr(resp, "UNABLE TO CONNECT") || strstr(resp, "STOPPED") ||
+        strstr(resp, "BUS ERROR")        || strstr(resp, "BUS INIT") ||
+        strstr(resp, "CAN ERROR")        || strstr(resp, "FB ERROR")) {
         out->read_ok = 1;
         return 0;
     }
@@ -30,8 +33,10 @@ int dtc_read(TcpSocket *sock, DtcList *out) {
 
     /* Response: 43 XX [b1 b2] [b1 b2] ... */
     /* bytes[0] = 0x43, bytes[1] = DTC count */
-    if (nb < 2 || bytes[0] != 0x43)
-        return -1;
+    if (nb < 2 || bytes[0] != 0x43) {
+        out->read_ok = 1;  /* unrecognized format -- treat as no DTCs */
+        return 0;
+    }
 
     int dtc_bytes = nb - 2;
     int i = 2;

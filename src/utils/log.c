@@ -7,7 +7,7 @@
 static FILE *g_log_fp = NULL;
 
 void log_init(const char *path) {
-    g_log_fp = fopen(path, "a");
+    g_log_fp = fopen(path, "w");
 }
 
 void log_write(int level, const char *fmt, ...) {

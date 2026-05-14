@@ -16,6 +16,20 @@ static float *field_ptr(VehicleState *s, PidIndex f) {
         case PID_RUNTIME:      return &s->runtime_s;
         case PID_FUEL_LEVEL:   return &s->fuel_level_pct;
         case PID_AMBIENT_TEMP: return &s->ambient_temp_c;
+        case PID_MAP:          return &s->map_kpa;
+        case PID_MAF:          return &s->maf_gs;
+        case PID_O2_B1S1:      return &s->o2_b1s1_v;
+        case PID_O2_B1S2:      return &s->o2_b1s2_v;
+        case PID_BARO:         return &s->baro_kpa;
+        case PID_REL_THROTTLE: return &s->rel_throttle_pct;
+        case PID_ACCEL_POS:    return &s->accel_pos_pct;
+        case PID_OIL_TEMP:     return &s->oil_temp_c;
+        case PID_FUEL_RATE:    return &s->fuel_rate_lh;
+        case PID_ETHANOL:      return &s->ethanol_pct;
+        case PID_MIL_TIME:     return &s->mil_time_min;
+        case PID_CLR_TIME:     return &s->clr_time_min;
+        case PID_MIL_DIST:     return &s->mil_dist_km;
+        case PID_CLR_DIST:     return &s->clr_dist_km;
         default:               return NULL;
     }
 }
@@ -38,20 +52,6 @@ int telemetry_is_stale(const VehicleState *state, PidIndex field, uint32_t now_m
 }
 
 float telemetry_get(const VehicleState *state, PidIndex field) {
-    switch (field) {
-        case PID_RPM:          return state->rpm;
-        case PID_SPEED:        return state->speed_kmh;
-        case PID_COOLANT_TEMP: return state->coolant_temp_c;
-        case PID_THROTTLE:     return state->throttle_pct;
-        case PID_IAT:          return state->iat_c;
-        case PID_ENGINE_LOAD:  return state->engine_load_pct;
-        case PID_VOLTAGE:      return state->voltage_v;
-        case PID_STFT:         return state->stft_pct;
-        case PID_LTFT:         return state->ltft_pct;
-        case PID_TIMING_ADV:   return state->timing_adv_deg;
-        case PID_RUNTIME:      return state->runtime_s;
-        case PID_FUEL_LEVEL:   return state->fuel_level_pct;
-        case PID_AMBIENT_TEMP: return state->ambient_temp_c;
-        default:               return 0.0f;
-    }
+    const float *fp = field_ptr((VehicleState *)state, field);
+    return fp ? *fp : 0.0f;
 }

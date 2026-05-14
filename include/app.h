@@ -2,7 +2,8 @@
 
 typedef enum {
     APP_STATE_INIT = 0,
-    APP_STATE_SETUP,            /* first-launch wizard or Select+Start settings */
+    APP_STATE_MAIN_MENU,        /* startup menu: connect / demo / settings      */
+    APP_STATE_SETUP,            /* first-launch wizard or settings screen       */
     APP_STATE_WIFI_CONNECTING,
     APP_STATE_OBD_CONNECTING,
     APP_STATE_RUNNING,

@@ -81,7 +81,10 @@ static void preload_ssids(void) {
 
 static const char *theme_name(ThemeID t) { return g_themes[t].name; }
 static const char *mode_name(DashMode m) {
-    static const char *n[] = {"Digital", "Analog", "Diagnostics", "Performance"};
+    static const char *n[] = {
+        "Digital", "Analog", "Diagnostics", "Performance",
+        "Engine", "Trip", "Sensors", "Economy", "JDM"
+    };
     return n[m % DASH_MODE_COUNT];
 }
 static const char *poll_name(int ms) {
@@ -108,19 +111,25 @@ static void draw_hint(const char *h) {
 /* ------------------------------------------------------------------ */
 
 static void run_test(int slot) {
-    WifiStatus ws;
-    wifi_get_status(&ws);
-
-    if (ws.connected)
-        wifi_shutdown();
-
     snprintf(g_test_msg, sizeof(g_test_msg), "Connecting to %s...",
              g_cache.slot_ssid[slot]);
     LOG_I("Setup: testing slot %d (%s)", slot, g_cache.slot_ssid[slot]);
 
-    if (wifi_init() != 0 || wifi_connect(slot) != 0) {
+    if (wifi_init() != 0) {
         snprintf(g_test_msg, sizeof(g_test_msg),
-                 "WiFi connection failed for: %s", g_cache.slot_ssid[slot]);
+                 "WiFi stack init failed (slot %d: %s)",
+                 slot, g_cache.slot_ssid[slot]);
+        LOG_E("wifi_init failed for slot %d", slot);
+        g_cache.slot_result[slot] = -1;
+        g_test_ok = 0;
+        return;
+    }
+
+    if (wifi_connect(slot) != 0) {
+        snprintf(g_test_msg, sizeof(g_test_msg),
+                 "WiFi connect failed: %s (slot %d)",
+                 g_cache.slot_ssid[slot], slot);
+        LOG_E("wifi_connect failed for slot %d (%s)", slot, g_cache.slot_ssid[slot]);
         g_cache.slot_result[slot] = -1;
         g_test_ok = 0;
         return;
@@ -197,16 +206,12 @@ SetupResult setup_update(InputState *input) {
     case SCR_WELCOME: {
         int wlan_on = sceWlanGetSwitchState();
 
-        /* Triangle = skip setup, go straight to dashboard (no OBD) */
-        if (input_pressed(input, BTN_TRIANGLE))
-            return SETUP_RESULT_SKIP;
-
-        /* Only allow proceeding when WLAN switch is on */
+            /* Only allow proceeding when WLAN switch is on */
         if (wlan_on) {
             if (input_pressed(input, BTN_CROSS) || input_pressed(input, BTN_START))
                 g_screen = SCR_NET_PICK;
         }
-        if (g_settings_mode && input_pressed(input, BTN_CIRCLE))
+        if (input_pressed(input, BTN_CIRCLE))
             return SETUP_RESULT_CANCEL;
         break;
     }
@@ -228,8 +233,8 @@ SetupResult setup_update(InputState *input) {
         if (input_pressed(input, BTN_CIRCLE)) {
             if (g_screen == SCR_NET_PICK_FROM_SETTINGS)
                 g_screen = SCR_SETTINGS;
-            else if (g_settings_mode)
-                return SETUP_RESULT_CANCEL;
+            else
+                g_screen = SCR_WELCOME;
         }
 
         if (input_pressed(input, BTN_START)) {
@@ -343,19 +348,19 @@ void setup_render(void) {
 
         font_draw_str(16, 110, "Make sure:", t->text_primary, 1);
         font_draw_str(24, 126, "1. OBD adapter plugged into car", t->text_secondary, 1);
-        font_draw_str(24, 142, "3. V-link network saved in PSP", t->text_secondary, 1);
-        font_draw_str(24, 158, "   Settings > Network Settings", t->text_secondary, 1);
+        font_draw_str(24, 158, "3. V-link network saved in PSP", t->text_secondary, 1);
+        font_draw_str(24, 174, "   Settings > Network Settings", t->text_secondary, 1);
 
         /* WLAN switch status - prominent if off */
         if (wlan_on) {
-            font_draw_str(24, 126 - 18, "2. WLAN switch: ON", COLOR_GREEN, 1);
-            draw_hint("X / Start: Begin setup   Triangle: Skip (demo)");
+            font_draw_str(24, 142, "2. WLAN switch: ON", COLOR_GREEN, 1);
+            draw_hint("X / Start: Begin setup   O: Back to menu");
         } else {
-            renderer_draw_rect(0, 192, SCREEN_W, 32, RGBA(60, 10, 10, 255));
-            font_draw_str(16, 196, "WLAN switch is OFF - slide it ON to continue",
+            renderer_draw_rect(0, 200, SCREEN_W, 32, RGBA(60, 10, 10, 255));
+            font_draw_str(16, 204, "WLAN switch is OFF - slide it ON to continue",
                           t->danger, 1);
-            font_draw_str(24, 126 - 18, "2. WLAN switch: OFF", t->danger, 1);
-            draw_hint("Turn WLAN switch ON to begin   Triangle: Skip (demo)");
+            font_draw_str(24, 142, "2. WLAN switch: OFF", t->danger, 1);
+            draw_hint("Turn WLAN switch ON to begin   O: Back to menu");
         }
         break;
     }

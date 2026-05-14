@@ -9,6 +9,9 @@ typedef struct {
 } GaugeDef;
 
 void gauge_draw_analog(GaugeDef *g, float value);
+void gauge_draw_analog_jdm(GaugeDef *g, float value,
+                            float major_step, float minor_step,
+                            float label_scale);
 void gauge_draw_bar(int x, int y, int w, int h,
                     float value, float min_val, float max_val,
                     uint32_t color_fill, uint32_t color_track);

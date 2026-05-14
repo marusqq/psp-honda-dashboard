@@ -11,6 +11,7 @@ OBJS = \
 	src/obd/parser.o \
 	src/obd/diagnostics.o \
 	src/telemetry/model.o \
+	src/telemetry/derived.o \
 	src/telemetry/filter.o \
 	src/telemetry/units.o \
 	src/ui/renderer.o \
@@ -41,6 +42,7 @@ LIBS    = -lpspgu -lpspgum -lpsprtc -lpspnet_inet -lpspwlan -lpsputility -lm
 
 EXTRA_TARGETS   = EBOOT.PBP
 PSP_EBOOT_TITLE = PSP OBD2 Dashboard
+PSP_EBOOT_ICON  = assets/icon0.png
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak

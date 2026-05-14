@@ -1,7 +1,21 @@
+#include <stdio.h>
 #include <string.h>
 #include "obd/elm327.h"
 #include "utils/log.h"
 #include "utils/time.h"
+
+static const struct { const char *ip; int port; } g_probe_candidates[] = {
+    { "192.168.0.10",  35000 },  /* Vgate iCar 2 default */
+    { "192.168.0.10",   3000 },  /* alternate Vgate firmware */
+    { "192.168.0.10",     23 },  /* telnet-style adapters */
+    { "192.168.1.1",   35000 },  /* some routed/clone adapters */
+    { "192.168.1.10",  35000 },
+    { "192.168.0.1",   35000 },
+    { "10.0.0.1",      35000 },
+    { "192.168.4.1",   35000 },  /* ESP8266/ESP32-based adapters */
+};
+#define PROBE_CANDIDATE_COUNT \
+    ((int)(sizeof(g_probe_candidates) / sizeof(g_probe_candidates[0])))
 
 static void strip_response(char *buf) {
     /* Remove trailing '>', spaces, CR, LF */
@@ -55,9 +69,37 @@ int elm327_send_cmd(TcpSocket *sock, const char *cmd, char *resp, int resp_max, 
 
 static int send_at(TcpSocket *sock, const char *cmd) {
     char resp[ELM327_RESP_MAX];
-    elm327_send_cmd(sock, cmd, resp, sizeof(resp), 1000);
-    /* "OK" response means success; other responses (e.g. version string) are also fine */
+    int n = elm327_send_cmd(sock, cmd, resp, sizeof(resp), 1000);
+    if (n <= 0)
+        LOG_W("send_at '%s': no response (socket may be dead)", cmd);
+    /* "OK" means success; version strings, empty, also acceptable */
     return 0;
+}
+
+/* Send 0100 (supported PID bitmask) until ELM327 has finished bus detection.
+   SEARCHING... / STOPPED mean the protocol negotiation is still in progress.
+   NO DATA or a valid hex frame means the bus is alive and ready.
+   Non-fatal: if it times out we carry on and let the poll loop handle it. */
+static void elm327_wait_bus_ready(TcpSocket *sock) {
+    uint32_t start    = time_now_ms();
+    uint32_t deadline = start + 10000;
+    int attempt = 0;
+    LOG_I("Waiting for OBD bus ready (max 10s)...");
+    while (time_now_ms() < deadline) {
+        char resp[ELM327_RESP_MAX];
+        elm327_send_cmd(sock, "0100", resp, sizeof(resp), 2000);
+        attempt++;
+        unsigned elapsed = (unsigned)(time_now_ms() - start);
+        if (strstr(resp, "SEARCHING") || strstr(resp, "STOPPED") ||
+            strstr(resp, "BUS INIT")  || resp[0] == '\0') {
+            LOG_D("bus_ready attempt %d (+%u ms): still waiting '%s'", attempt, elapsed, resp);
+            time_sleep_ms(300);
+            continue;
+        }
+        LOG_I("Bus ready +%u ms (%d attempts): '%s'", elapsed, attempt, resp);
+        return;
+    }
+    LOG_W("elm327_wait_bus_ready: 10s timeout after %d attempts, continuing", attempt);
 }
 
 int elm327_init(TcpSocket *sock) {
@@ -75,10 +117,75 @@ int elm327_init(TcpSocket *sock) {
     send_at(sock, "ATAT1"); /* adaptive timing mode 1 */
     send_at(sock, "ATSP0"); /* auto-detect protocol */
 
+    /* Wait for bus detection to complete before handing off to poll loop */
+    elm327_wait_bus_ready(sock);
+
     LOG_I("ELM327 init done");
     return 0;
 }
 
 int elm327_query_pid(TcpSocket *sock, const char *pid_cmd, char *resp, int resp_max) {
     return elm327_send_cmd(sock, pid_cmd, resp, resp_max, SOCKET_TIMEOUT_MS);
+}
+
+int elm327_probe(TcpSocket *sock, char *out_ip, int ip_max, int *out_port,
+                 char *status, int status_max) {
+    LOG_I("ELM327 probe: trying %d candidates", PROBE_CANDIDATE_COUNT);
+
+    for (int i = 0; i < PROBE_CANDIDATE_COUNT; i++) {
+        const char *ip   = g_probe_candidates[i].ip;
+        int         port = g_probe_candidates[i].port;
+
+        if (status && status_max > 0)
+            snprintf(status, (size_t)status_max,
+                     "Probing %s:%d  (%d/%d)...", ip, port,
+                     i + 1, PROBE_CANDIDATE_COUNT);
+
+        LOG_I("Probe %d/%d: %s:%d", i + 1, PROBE_CANDIDATE_COUNT, ip, port);
+
+        socket_init(sock, ip, port);
+        if (socket_connect(sock) != 0) {
+            LOG_I("Probe %s:%d - no connection", ip, port);
+            socket_close(sock);
+            continue;
+        }
+
+        /* Flush stale bytes left in adapter TCP buffer from a previous session.
+           Send a bare CR to terminate any partial command, then drain the reply. */
+        {
+            char flush[64];
+            int flushed = 0;
+            socket_send(sock, "\r", 1);
+            time_sleep_ms(60);
+            int fn;
+            while ((fn = socket_recv(sock, flush, sizeof(flush) - 1, 20)) > 0)
+                flushed += fn;
+            if (flushed > 0)
+                LOG_D("Probe %s:%d - flushed %d stale bytes", ip, port, flushed);
+        }
+
+        /* Confirm it's an ELM327-compatible adapter */
+        char resp[ELM327_RESP_MAX];
+        int  n = elm327_send_cmd(sock, "ATI", resp, sizeof(resp), 2000);
+        if (n > 0 && resp[0] != '\0') {
+            /* Sanity: ELM327 ATI always contains "ELM" */
+            if (!strstr(resp, "ELM") && !strstr(resp, "elm"))
+                LOG_W("Probe %s:%d - ATI='%s' looks garbled (missing ELM)", ip, port, resp);
+            LOG_I("Probe found adapter at %s:%d  ATI='%s'", ip, port, resp);
+            if (out_ip)   { strncpy(out_ip, ip, (size_t)(ip_max - 1)); out_ip[ip_max - 1] = '\0'; }
+            if (out_port) *out_port = port;
+            if (status && status_max > 0)
+                snprintf(status, (size_t)status_max, "Found: %s:%d  %s", ip, port, resp);
+            return 0;
+        }
+
+        LOG_W("Probe %s:%d - ATI returned empty/no response (n=%d), skipping", ip, port, n);
+        socket_close(sock);
+    }
+
+    LOG_E("Probe: no adapter found on any candidate");
+    if (status && status_max > 0)
+        snprintf(status, (size_t)status_max, "No OBD adapter found (%d addresses tried)",
+                 PROBE_CANDIDATE_COUNT);
+    return -1;
 }
