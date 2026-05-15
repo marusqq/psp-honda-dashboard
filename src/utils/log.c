@@ -7,7 +7,15 @@
 static FILE *g_log_fp = NULL;
 
 void log_init(const char *path) {
-    g_log_fp = fopen(path, "w");
+    g_log_fp = fopen(path, "a");
+    if (!g_log_fp)
+        return;
+    ScePspDateTime t;
+    if (sceRtcGetCurrentClockLocalTime(&t) == 0)
+        fprintf(g_log_fp, "\n=== SESSION START %04u-%02u-%02u %02u:%02u:%02u ===\n",
+                t.year, t.month, t.day, t.hour, t.minute, t.second);
+    else
+        fprintf(g_log_fp, "\n=== SESSION START ===\n");
 }
 
 void log_write(int level, const char *fmt, ...) {

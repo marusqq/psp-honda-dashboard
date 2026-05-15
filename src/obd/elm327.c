@@ -72,7 +72,8 @@ static int send_at(TcpSocket *sock, const char *cmd) {
     int n = elm327_send_cmd(sock, cmd, resp, sizeof(resp), 1000);
     if (n <= 0)
         LOG_W("send_at '%s': no response (socket may be dead)", cmd);
-    /* "OK" means success; version strings, empty, also acceptable */
+    else
+        LOG_I("send_at '%s' -> '%s'", cmd, resp);
     return 0;
 }
 
@@ -92,14 +93,14 @@ static void elm327_wait_bus_ready(TcpSocket *sock) {
         unsigned elapsed = (unsigned)(time_now_ms() - start);
         if (strstr(resp, "SEARCHING") || strstr(resp, "STOPPED") ||
             strstr(resp, "BUS INIT")  || resp[0] == '\0') {
-            LOG_D("bus_ready attempt %d (+%u ms): still waiting '%s'", attempt, elapsed, resp);
+            LOG_I("bus_ready attempt %d (+%u ms): still negotiating '%s'", attempt, elapsed, resp);
             time_sleep_ms(300);
             continue;
         }
         LOG_I("Bus ready +%u ms (%d attempts): '%s'", elapsed, attempt, resp);
         return;
     }
-    LOG_W("elm327_wait_bus_ready: 10s timeout after %d attempts, continuing", attempt);
+    LOG_W("elm327_wait_bus_ready: 10s timeout after %d attempts -- poll loop will handle remaining SEARCHING responses", attempt);
 }
 
 int elm327_init(TcpSocket *sock) {
