@@ -42,12 +42,19 @@ void derived_compute(DerivedState *d, const VehicleState *vs, uint32_t dt_ms) {
     /* Gear */
     d->gear = estimate_gear(vs->speed_kmh, vs->rpm);
 
-    /* Fuel economy */
-    int fuel_ok = (vs->supported[PID_FUEL_RATE] == 1);
-    d->instant_lh = fuel_ok ? vs->fuel_rate_lh : DERIVED_NO_DATA;
+    /* Fuel economy -- native PID 5E preferred, MAF-derived fallback */
+    float effective_lh = DERIVED_NO_DATA;
+    if (vs->supported[PID_FUEL_RATE] == 1) {
+        effective_lh = vs->fuel_rate_lh;
+    } else if (vs->supported[PID_MAF] == 1 && vs->maf_gs >= 0.0f) {
+        /* MAF (g/s) -> L/h: divide by stoich AFR (14.7) and fuel density (0.737 kg/L), scale to L/h */
+        effective_lh = vs->maf_gs * (3.6f / (14.7f * 0.737f));
+    }
+    int fuel_ok = (effective_lh != DERIVED_NO_DATA);
+    d->instant_lh = effective_lh;
 
     if (fuel_ok && vs->speed_kmh >= 5.0f) {
-        float l100 = (vs->fuel_rate_lh / vs->speed_kmh) * 100.0f;
+        float l100 = (effective_lh / vs->speed_kmh) * 100.0f;
         d->instant_l100km = (l100 > 99.9f) ? 99.9f : l100;
     } else {
         d->instant_l100km = DERIVED_NO_DATA;
@@ -55,7 +62,7 @@ void derived_compute(DerivedState *d, const VehicleState *vs, uint32_t dt_ms) {
 
     /* Trip accumulation */
     if (fuel_ok && dt_h > 0.0f)
-        d->trip_fuel_l += vs->fuel_rate_lh * dt_h;
+        d->trip_fuel_l += effective_lh * dt_h;
     d->trip_dist_km += vs->speed_kmh * dt_h;
 
     if (d->trip_dist_km > 0.05f && fuel_ok && d->trip_fuel_l > 0.0f)

@@ -83,7 +83,7 @@ static int send_at(TcpSocket *sock, const char *cmd) {
    Non-fatal: if it times out we carry on and let the poll loop handle it. */
 static void elm327_wait_bus_ready(TcpSocket *sock) {
     uint32_t start    = time_now_ms();
-    uint32_t deadline = start + 10000;
+    uint32_t deadline = start + 15000;
     int attempt = 0;
     LOG_I("Waiting for OBD bus ready (max 10s)...");
     while (time_now_ms() < deadline) {
@@ -100,7 +100,7 @@ static void elm327_wait_bus_ready(TcpSocket *sock) {
         LOG_I("Bus ready +%u ms (%d attempts): '%s'", elapsed, attempt, resp);
         return;
     }
-    LOG_W("elm327_wait_bus_ready: 10s timeout after %d attempts -- poll loop will handle remaining SEARCHING responses", attempt);
+    LOG_W("elm327_wait_bus_ready: 15s timeout after %d attempts -- poll loop will handle remaining SEARCHING responses", attempt);
 }
 
 int elm327_init(TcpSocket *sock) {
@@ -116,7 +116,7 @@ int elm327_init(TcpSocket *sock) {
     send_at(sock, "ATS0");  /* spaces off in responses */
     send_at(sock, "ATH0");  /* headers off */
     send_at(sock, "ATAT1"); /* adaptive timing mode 1 */
-    send_at(sock, "ATSP0"); /* auto-detect protocol */
+    send_at(sock, "ATSP3"); /* ISO 9141-2 (pre-CAN Honda/Acura) */
 
     /* Wait for bus detection to complete before handing off to poll loop */
     elm327_wait_bus_ready(sock);
