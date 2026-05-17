@@ -13,6 +13,8 @@ typedef enum {
     DASH_MODE_SENSORS,  /* MAP/MAF, O2, oil temp, fuel rate, all sensors */
     DASH_MODE_ECONOMY,  /* gear, L/100km, range, G-force, AFR */
     DASH_MODE_JDM,      /* NFS/JDM style: big tach+speedo, RPM strip, gear */
+    DASH_MODE_TOUGE,    /* touge: power band strip, huge gear, shift lights */
+    DASH_MODE_VTEC,     /* VTEC: animated badge, RPM/throttle/load bars */
     DASH_MODE_COUNT
 } DashMode;
 
@@ -40,5 +42,7 @@ void dashboard_render_trip(const VehicleState *vs, const DerivedState *d);
 void dashboard_render_sensors(const VehicleState *vs, const DerivedState *d);
 void dashboard_render_economy(const VehicleState *vs, const DerivedState *d);
 void dashboard_render_jdm(const VehicleState *vs, const DerivedState *d);
+void dashboard_render_touge(const VehicleState *vs, const DerivedState *d);
+void dashboard_render_vtec(const VehicleState *vs, const DerivedState *d);
 void dashboard_trip_reset_session(void);
 void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int connected);

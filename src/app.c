@@ -28,8 +28,10 @@
 #define TARGET_FPS     30
 #define FRAME_TIME_MS  (1000 / TARGET_FPS)
 
-static volatile int  g_running   = 0;
-static AppState      g_state     = APP_STATE_INIT;
+static volatile int  g_running        = 0;
+static volatile int  g_obd_poll_busy  = 0;  /* 1 while OBD thread is inside a socket op */
+static SceUID        g_obd_thread_id  = -1;
+static AppState      g_state          = APP_STATE_INIT;
 static Settings      g_settings;
 static TcpSocket     g_sock;
 static ReconnectState g_reconnect;
@@ -91,21 +93,68 @@ static void leave_setup(SetupResult result) {
 /* Forcibly close all connections and return to the main menu.
    Safe to call from any app state, including while OBD is active. */
 static void return_to_main_menu(void) {
+    /* Signal OBD thread to stop, then wait for it to finish any in-progress
+       socket op before we close the socket under it (max 600 ms). */
+    g_state = APP_STATE_MAIN_MENU;
+    for (int i = 0; g_obd_poll_busy && i < 600; i++)
+        sceKernelDelayThread(1000);
+
     socket_close(&g_sock);
     wifi_shutdown();
     telemetry_init(&g_vehicle);
     memset(&g_dtc, 0, sizeof(g_dtc));
-    for (int i = 0; i < PID_COUNT; i++) {
+    for (int i = 0; i < PID_COUNT; i++)
         filter_init(&g_filters[i]);
-    }
     pid_scheduler_init(&g_sched, g_settings.poll_interval_ms);
     memset(&g_derived, 0, sizeof(g_derived));
     g_demo_mode    = 0;
     g_in_setup     = 0;
     g_help_visible = 0;
     g_obd_status[0] = '\0';
-    g_state        = APP_STATE_MAIN_MENU;
     LOG_I("Returned to main menu");
+}
+
+/* ------------------------------------------------------------------ */
+
+static void poll_obd(void); /* defined below */
+
+/* ------------------------------------------------------------------ */
+/* OBD polling thread -- runs independently so the render loop never   */
+/* blocks waiting for ISO 9141-2 bus responses (~300-400 ms each).     */
+/* ------------------------------------------------------------------ */
+
+static int obd_thread_func(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    uint32_t dtc_next_try_ms = 0;
+
+    while (g_running) {
+        if (g_state != APP_STATE_RUNNING || g_demo_mode) {
+            sceKernelDelayThread(5000); /* 5 ms -- idle when not in RUNNING */
+            continue;
+        }
+
+        g_obd_poll_busy = 1;
+        poll_obd();
+
+        if (!socket_is_connected(&g_sock)) {
+            LOG_W("OBD connection lost, will re-probe");
+            reconnect_reset(&g_reconnect);
+            g_obd_status[0] = '\0';
+            g_state = APP_STATE_OBD_CONNECTING;
+            g_obd_poll_busy = 0;
+            continue;
+        }
+
+        if (!g_dtc.read_ok && time_now_ms() >= dtc_next_try_ms) {
+            if (dtc_read(&g_sock, &g_dtc) != 0)
+                dtc_next_try_ms = time_now_ms() + 5000;
+        }
+
+        g_obd_poll_busy = 0;
+    }
+
+    g_obd_poll_busy = 0;
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,6 +183,13 @@ int app_init(void) {
 
     dashboard_init();
     g_running = 1;
+
+    g_obd_thread_id = sceKernelCreateThread("obd_poll", obd_thread_func,
+                                             0x20, 0x2000, 0, NULL);
+    if (g_obd_thread_id >= 0)
+        sceKernelStartThread(g_obd_thread_id, 0, NULL);
+    else
+        LOG_W("OBD thread creation failed (id=%d), polling will block render", g_obd_thread_id);
 
     g_state = APP_STATE_MAIN_MENU;
     LOG_I("App init OK");
@@ -326,6 +382,15 @@ static uint32_t get_mode_pid_mask(DashMode mode) {
     case DASH_MODE_JDM:
         mask = M(RPM)|M(SPEED)|M(COOLANT_TEMP)|M(VOLTAGE)|M(THROTTLE);
         break;
+    case DASH_MODE_TOUGE:
+        mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|M(IAT)|
+               M(COOLANT_TEMP)|M(TIMING_ADV)|M(O2_B1S1)|M(FUEL_RATE)|M(MAF);
+        break;
+    case DASH_MODE_VTEC:
+        mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|M(IAT)|
+               M(COOLANT_TEMP)|M(STFT)|M(LTFT)|M(TIMING_ADV)|M(O2_B1S1)|
+               M(FUEL_RATE)|M(MAF);
+        break;
     default:
         return 0; /* 0 = poll all */
     }
@@ -370,7 +435,8 @@ static void poll_obd(void) {
         /* SEARCHING.../STOPPED are transient bus-detection states; don't
            penalise the PID.  Only NO DATA or '?' mean the PID is actually
            unsupported by this ECU. */
-        if (strstr(resp, "SEARCHING") || strstr(resp, "STOPPED") ||
+        if (resp[0] == '\0' ||
+            strstr(resp, "SEARCHING") || strstr(resp, "STOPPED") ||
             strstr(resp, "BUS INIT")  || strstr(resp, "UNABLE TO CONNECT")) {
             LOG_D("PID[%d] %s transient bus state: '%s'", (int)pid,
                   PID_TABLE[pid].name, resp);
@@ -760,21 +826,7 @@ void app_run(void) {
                     s_last_mask = new_mask;
                 }
                 g_sched.active_mask = new_mask;
-                poll_obd();
-
-                if (!socket_is_connected(&g_sock)) {
-                    LOG_W("OBD connection lost, will re-probe");
-                    reconnect_reset(&g_reconnect);
-                    g_obd_status[0] = '\0';
-                    g_state = APP_STATE_OBD_CONNECTING;
-                }
-
-                static uint32_t dtc_next_try_ms = 0;
-                if (!g_dtc.read_ok && socket_is_connected(&g_sock) &&
-                    time_now_ms() >= dtc_next_try_ms) {
-                    if (dtc_read(&g_sock, &g_dtc) != 0)
-                        dtc_next_try_ms = time_now_ms() + 5000;
-                }
+                /* OBD polling, socket-dead detection, and DTC read run in obd_thread_func */
             }
 
             derived_compute(&g_derived, &g_vehicle, dt_ms);
@@ -814,6 +866,9 @@ void app_run(void) {
 /* ------------------------------------------------------------------ */
 
 void app_shutdown(void) {
+    g_running = 0;
+    if (g_obd_thread_id >= 0)
+        sceKernelTerminateDeleteThread(g_obd_thread_id);
     socket_close(&g_sock);
     wifi_shutdown();
     renderer_shutdown();

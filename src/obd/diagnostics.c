@@ -38,7 +38,6 @@ int dtc_read(TcpSocket *sock, DtcList *out) {
         return 0;
     }
 
-    int dtc_bytes = nb - 2;
     int i = 2;
     while (i + 1 < nb && out->count < DTC_MAX) {
         if (bytes[i] == 0 && bytes[i+1] == 0) {
@@ -49,8 +48,6 @@ int dtc_read(TcpSocket *sock, DtcList *out) {
         out->count++;
         i += 2;
     }
-    (void)dtc_bytes;
-
     out->read_ok = 1;
     LOG_I("DTC read: %d codes", out->count);
     return 0;
@@ -58,7 +55,11 @@ int dtc_read(TcpSocket *sock, DtcList *out) {
 
 int dtc_clear(TcpSocket *sock) {
     char resp[ELM327_RESP_MAX];
-    elm327_send_cmd(sock, "04", resp, sizeof(resp), 3000);
-    LOG_I("DTC clear sent");
+    int n = elm327_send_cmd(sock, "04", resp, sizeof(resp), 3000);
+    if (n <= 0) {
+        LOG_W("DTC clear: no response");
+        return -1;
+    }
+    LOG_I("DTC clear: '%s'", resp);
     return 0;
 }

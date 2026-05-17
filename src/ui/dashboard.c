@@ -5,7 +5,10 @@
 #include "ui/gauge.h"
 #include "ui/themes.h"
 #include "utils/font.h"
+#include "utils/time.h"
 #include "telemetry/units.h"
+
+#define VTEC_RPM_THRESHOLD 5800.0f
 
 #define PI_F 3.14159265f
 
@@ -1031,13 +1034,362 @@ void dashboard_render_jdm(const VehicleState *vs, const DerivedState *d) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Touge -- driving-focused, peripheral-vision layout                  */
+/* Star: huge gear + RPM + speed. AFR, G-force, shift lights.         */
+/* ------------------------------------------------------------------ */
+
+void dashboard_render_touge(const VehicleState *vs, const DerivedState *d) {
+    const Theme *t  = theme_current();
+    uint32_t    now = time_now_ms();
+
+    /* === RPM power band strip (y=0, h=10) === */
+    renderer_draw_rect(0,   0, 480, 10, t->gauge_track);
+    renderer_draw_rect(0,   0, 270, 10, RGBA(0,  35,  0, 255));
+    renderer_draw_rect(270, 0,  78, 10, RGBA(35, 25,  0, 255));
+    renderer_draw_rect(348, 0, 132, 10, RGBA(40,  0,  0, 255));
+    {
+        float pct = vs->rpm / 8000.0f;
+        if (pct > 1.0f) pct = 1.0f;
+        int fw = (int)(pct * 480);
+        if (fw > 0) {
+            if (fw <= 270) {
+                renderer_draw_rect(0, 0, fw, 10, t->gauge_fill);
+            } else if (fw <= 348) {
+                renderer_draw_rect(0,   0, 270,      10, t->gauge_fill);
+                renderer_draw_rect(270, 0, fw - 270, 10, t->warn);
+            } else {
+                renderer_draw_rect(0,   0, 270,      10, t->gauge_fill);
+                renderer_draw_rect(270, 0,  78,      10, t->warn);
+                renderer_draw_rect(348, 0, fw - 348, 10, t->redline);
+            }
+        }
+    }
+
+    /* === Main row: Gear | RPM | Speed (y=12-66) === */
+    gauge_draw_label(12,  12, "GEAR",  t->text_secondary, 1);
+    gauge_draw_label(140, 12, "RPM",   t->text_secondary, 1);
+    gauge_draw_label(315, 12, "SPEED", t->text_secondary, 1);
+
+    draw_gear(12, 22, d->gear, 5, t);  /* scale 5 = 40px tall, ends y=62 */
+
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f", vs->rpm);
+        uint32_t rc = (vs->rpm >= 6500.0f)        ? t->redline  :
+                      (vs->rpm >= VTEC_RPM_THRESHOLD) ? COLOR_GREEN :
+                      t->text_primary;
+        font_draw_str(140, 22, buf, rc, 2);
+    }
+    gauge_draw_bar(140, 44, 150, 7, vs->rpm, 0.0f, 8000.0f, t->gauge_fill, t->gauge_track);
+    font_draw_str(140, 53, "rpm", t->text_secondary, 1);
+
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f", vs->speed_kmh);
+        font_draw_str(315, 20, buf, t->text_primary, 3);
+    }
+    font_draw_str(315, 46, "km/h", t->text_secondary, 1);
+
+    /* VTEC indicator -- appears top-right only when engaged, flashes */
+    if (vs->rpm >= VTEC_RPM_THRESHOLD) {
+        uint32_t vc = ((now / 200) % 2) ? COLOR_GREEN : RGBA(0, 140, 0, 255);
+        font_draw_str(408, 12, "VTEC", vc, 1);
+        font_draw_str(412, 22, "ON",   vc, 1);
+    }
+
+    draw_divider(0, 70, SCREEN_W);
+
+    /* === AFR + G-force + coast row (y=74) === */
+    gauge_draw_label(8, 74, "AFR", t->text_secondary, 1);
+    if (d->afr_state < 0) {
+        font_draw_str(38, 74, "N/A", RGBA(70, 70, 70, 255), 1);
+    } else {
+        static const char *afl[] = { "LEAN", "STOICH", "RICH" };
+        uint32_t afc = (d->afr_state == 0) ? t->danger :
+                       (d->afr_state == 1) ? COLOR_GREEN : t->warn;
+        font_draw_str(38, 74, afl[d->afr_state], afc, 1);
+        if (vs->supported[PID_O2_B1S1] == 1) {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%.2fV", vs->o2_b1s1_v);
+            font_draw_str(100, 74, buf, t->text_secondary, 1);
+        }
+    }
+
+    {
+        char gbuf[12];
+        uint32_t gc = (d->accel_g >  0.1f) ? t->accent :
+                      (d->accel_g < -0.1f) ? t->warn : t->text_secondary;
+        snprintf(gbuf, sizeof(gbuf), "%+.2fG", d->accel_g);
+        font_draw_str(230, 74, gbuf, gc, 1);
+    }
+
+    if (d->coasting)
+        font_draw_str(340, 74, "COASTING", COLOR_GREEN, 1);
+    else if (d->idle)
+        font_draw_str(374, 74, "IDLE", t->text_secondary, 1);
+
+    draw_divider(0, 92, SCREEN_W);
+
+    /* === Data strip: Timing | Load | IAT | Throttle (y=96-130) === */
+    gauge_draw_label(8,   96, "TIMING",   t->text_secondary, 1);
+    draw_fa(8, 106, vs->timing_adv_deg, "%+.1f", "deg",
+            vs->supported[PID_TIMING_ADV], t->text_primary, 1, t);
+
+    gauge_draw_label(120, 96, "LOAD", t->text_secondary, 1);
+    gauge_draw_numeric(120, 106, vs->engine_load_pct, "%.0f", "%", t->text_primary, 1);
+    gauge_draw_bar(120, 118, 90, 6, vs->engine_load_pct, 0.0f, 100.0f, t->gauge_fill, t->gauge_track);
+
+    gauge_draw_label(228, 96, "IAT", t->text_secondary, 1);
+    gauge_draw_numeric(228, 106, vs->iat_c, "%.0f", "C", t->text_primary, 1);
+
+    gauge_draw_label(318, 96, "THROTTLE", t->text_secondary, 1);
+    {
+        uint32_t tc = (vs->throttle_pct > 80.0f) ? t->redline :
+                      (vs->throttle_pct > 50.0f) ? t->warn : t->gauge_fill;
+        gauge_draw_bar(318, 106, 154, 8, vs->throttle_pct, 0.0f, 100.0f, tc, t->gauge_track);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f%%", vs->throttle_pct);
+        font_draw_str(318, 118, buf, tc, 1);
+    }
+
+    draw_divider(0, 132, SCREEN_W);
+
+    /* === G-force bar (y=136-148) === */
+    gauge_draw_label(8, 136, "G-FORCE", t->text_secondary, 1);
+    draw_g_bar(8, 148, 464, d->accel_g, t);
+    font_draw_str(8,   160, "-2G", RGBA(70, 70, 70, 255), 1);
+    font_draw_str(232, 160, "0G",  RGBA(70, 70, 70, 255), 1);
+    font_draw_str(452, 160, "+2G", RGBA(70, 70, 70, 255), 1);
+
+    draw_divider(0, 174, SCREEN_W);
+
+    /* === Bottom info: fuel economy + coolant (y=178) === */
+    gauge_draw_label(8, 178, "INSTANT", t->text_secondary, 1);
+    if (d->instant_l100km > 0.0f) {
+        gauge_draw_numeric(62, 178, d->instant_l100km, "%.1f", "L/100", t->accent, 1);
+    } else {
+        font_draw_str(62, 178, "--.-", t->text_secondary, 1);
+    }
+
+    gauge_draw_label(190, 178, "TRIP AVG", t->text_secondary, 1);
+    if (d->trip_l100km > 0.5f) {
+        gauge_draw_numeric(254, 178, d->trip_l100km, "%.1f", "L/100", t->text_primary, 1);
+    } else {
+        font_draw_str(254, 178, "--.-", t->text_secondary, 1);
+    }
+
+    gauge_draw_label(370, 178, "COOL", t->text_secondary, 1);
+    {
+        uint32_t cc = (vs->coolant_temp_c > 100.0f) ? t->danger :
+                      (vs->coolant_temp_c > 90.0f)  ? t->warn : t->text_primary;
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0fC", vs->coolant_temp_c);
+        font_draw_str(404, 178, buf, cc, 1);
+    }
+
+    /* === Shift lights: 8 blocks, fill 5500-6500 RPM (y=196-210) === */
+    if (vs->rpm >= 5500.0f) {
+        int lit = (int)((vs->rpm - 5500.0f) / 125.0f);
+        if (lit > 8) lit = 8;
+        int bw = 48, gap = 7;  /* 8*48 + 7*7 = 433px, start x=24 */
+        for (int i = 0; i < 8; i++) {
+            uint32_t bc = (i < lit)
+                ? ((i < 4) ? t->warn : t->redline)
+                : t->gauge_track;
+            renderer_draw_rect(24 + i * (bw + gap), 196, bw, 14, bc);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* VTEC -- Honda engine performance screen                             */
+/* RPM + VTEC engage badge + throttle/load bars + trims + G-force.    */
+/* ------------------------------------------------------------------ */
+
+void dashboard_render_vtec(const VehicleState *vs, const DerivedState *d) {
+    const Theme *t   = theme_current();
+    uint32_t    now  = time_now_ms();
+    int         vtec = (vs->rpm >= VTEC_RPM_THRESHOLD);
+
+    /* === RPM strip (y=0, h=12) with yellow VTEC threshold marker === */
+    renderer_draw_rect(0,   0, 480, 12, t->gauge_track);
+    renderer_draw_rect(0,   0, 270, 12, RGBA(0,  35,  0, 255));
+    renderer_draw_rect(270, 0,  78, 12, RGBA(35, 25,  0, 255));
+    renderer_draw_rect(348, 0, 132, 12, RGBA(40,  0,  0, 255));
+    {
+        float pct = vs->rpm / 8000.0f;
+        if (pct > 1.0f) pct = 1.0f;
+        int fw = (int)(pct * 480);
+        if (fw > 0) {
+            if (fw <= 270) {
+                renderer_draw_rect(0, 0, fw, 12, t->gauge_fill);
+            } else if (fw <= 348) {
+                renderer_draw_rect(0,   0, 270,      12, t->gauge_fill);
+                renderer_draw_rect(270, 0, fw - 270, 12, t->warn);
+            } else {
+                renderer_draw_rect(0,   0, 270,      12, t->gauge_fill);
+                renderer_draw_rect(270, 0,  78,      12, t->warn);
+                renderer_draw_rect(348, 0, fw - 348, 12, t->redline);
+            }
+        }
+        /* VTEC threshold marker */
+        renderer_draw_rect(348, 0, 2, 12, RGBA(255, 255, 0, 220));
+    }
+
+    /* === VTEC badge (center) + RPM (left) + Speed (right) (y=15-54) === */
+    {
+        int flash = !vtec || ((now / 180) % 2);
+        const char *vtec_str = vtec ? "VTEC ON" : "VTEC OFF";
+        uint32_t badge_bg  = vtec && flash ? RGBA(0, 50, 0, 255) : RGBA(18, 18, 18, 255);
+        uint32_t badge_bdr = vtec && flash ? COLOR_GREEN : RGBA(45, 45, 45, 255);
+        uint32_t vtec_col  = vtec && flash ? COLOR_GREEN :
+                             vtec           ? RGBA(0, 160, 0, 255) :
+                             RGBA(50, 50, 50, 255);
+
+        /* badge box: x=145, y=15, w=190, h=36 */
+        renderer_draw_rect(145, 15, 190, 36, badge_bg);
+        renderer_draw_rect(145, 15, 190,  1, badge_bdr);
+        renderer_draw_rect(145, 50,  190,  1, badge_bdr);
+        renderer_draw_rect(145, 15,   1, 36, badge_bdr);
+        renderer_draw_rect(334, 15,   1, 36, badge_bdr);
+
+        int tw = font_str_width(vtec_str, 2);
+        font_draw_str(240 - tw / 2, 24, vtec_str, vtec_col, 2);
+    }
+
+    /* RPM value left of badge */
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f", vs->rpm);
+        uint32_t rc = (vs->rpm >= 6500.0f) ? t->redline :
+                      vtec                  ? COLOR_GREEN : t->text_primary;
+        font_draw_str(8, 18, buf, rc, 3);
+        font_draw_str(8, 44, "rpm", t->text_secondary, 1);
+    }
+
+    /* Speed right of badge */
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f", vs->speed_kmh);
+        font_draw_str(352, 20, buf, t->text_primary, 2);
+        font_draw_str(352, 38, "km/h", t->text_secondary, 1);
+    }
+
+    draw_divider(0, 56, SCREEN_W);
+
+    /* === Full-width RPM bar with VTEC marker (y=60-76) === */
+    gauge_draw_label(8, 60, "RPM", t->text_secondary, 1);
+    {
+        uint32_t bc = (vs->rpm >= 6500.0f) ? t->redline :
+                      vtec                  ? COLOR_GREEN : t->gauge_fill;
+        gauge_draw_bar(8, 70, 464, 10, vs->rpm, 0.0f, 8000.0f, bc, t->gauge_track);
+        int mx = 8 + (int)(VTEC_RPM_THRESHOLD / 8000.0f * 464);
+        renderer_draw_rect(mx, 68, 2, 14, RGBA(255, 255, 0, 200));
+    }
+
+    /* === Throttle bar (y=86-100) === */
+    gauge_draw_label(8, 86, "THROTTLE", t->text_secondary, 1);
+    {
+        uint32_t tc = (vs->throttle_pct > 80.0f) ? t->redline :
+                      (vs->throttle_pct > 50.0f) ? t->warn : t->gauge_fill;
+        gauge_draw_bar(8, 96, 432, 10, vs->throttle_pct, 0.0f, 100.0f, tc, t->gauge_track);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f%%", vs->throttle_pct);
+        font_draw_str(448, 96, buf, tc, 1);
+    }
+
+    /* === Engine load bar (y=110-124) === */
+    gauge_draw_label(8, 110, "ENGINE LOAD", t->text_secondary, 1);
+    {
+        uint32_t lc = (vs->engine_load_pct > 80.0f) ? t->redline :
+                      (vs->engine_load_pct > 60.0f) ? t->warn : t->gauge_fill;
+        gauge_draw_bar(8, 120, 432, 10, vs->engine_load_pct, 0.0f, 100.0f, lc, t->gauge_track);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0f%%", vs->engine_load_pct);
+        font_draw_str(448, 120, buf, lc, 1);
+    }
+
+    draw_divider(0, 134, SCREEN_W);
+
+    /* === Compact trim + timing + AFR row (y=138) === */
+    gauge_draw_label(8, 138, "STFT", t->text_secondary, 1);
+    {
+        uint32_t sc = (vs->stft_pct > 10.0f || vs->stft_pct < -10.0f) ? t->danger :
+                      (vs->stft_pct >  5.0f || vs->stft_pct <  -5.0f) ? t->warn : t->gauge_fill;
+        draw_fa(8, 148, vs->stft_pct, "%+.1f", "%", vs->supported[PID_STFT], sc, 1, t);
+    }
+
+    gauge_draw_label(100, 138, "LTFT", t->text_secondary, 1);
+    {
+        uint32_t lc = (vs->ltft_pct > 10.0f || vs->ltft_pct < -10.0f) ? t->danger :
+                      (vs->ltft_pct >  5.0f || vs->ltft_pct <  -5.0f) ? t->warn : t->gauge_fill;
+        draw_fa(100, 148, vs->ltft_pct, "%+.1f", "%", vs->supported[PID_LTFT], lc, 1, t);
+    }
+
+    gauge_draw_label(200, 138, "TIMING", t->text_secondary, 1);
+    draw_fa(200, 148, vs->timing_adv_deg, "%+.1f", "deg",
+            vs->supported[PID_TIMING_ADV], t->text_primary, 1, t);
+
+    gauge_draw_label(320, 138, "AFR", t->text_secondary, 1);
+    if (d->afr_state < 0) {
+        font_draw_str(352, 138, "N/A", RGBA(70, 70, 70, 255), 1);
+    } else {
+        static const char *afl[] = { "LEAN", "STOICH", "RICH" };
+        uint32_t afc = (d->afr_state == 0) ? t->danger :
+                       (d->afr_state == 1) ? COLOR_GREEN : t->warn;
+        font_draw_str(352, 138, afl[d->afr_state], afc, 1);
+    }
+
+    draw_divider(0, 162, SCREEN_W);
+
+    /* === Context strip: Coolant | IAT | Gear | G-force (y=166) === */
+    gauge_draw_label(8, 166, "COOL", t->text_secondary, 1);
+    {
+        uint32_t cc = (vs->coolant_temp_c > 100.0f) ? t->danger :
+                      (vs->coolant_temp_c > 90.0f)  ? t->warn : t->text_primary;
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%.0fC", vs->coolant_temp_c);
+        font_draw_str(42, 166, buf, cc, 1);
+    }
+
+    gauge_draw_label(110, 166, "IAT", t->text_secondary, 1);
+    gauge_draw_numeric(138, 166, vs->iat_c, "%.0f", "C", t->text_primary, 1);
+
+    gauge_draw_label(200, 166, "GEAR", t->text_secondary, 1);
+    draw_gear(234, 162, d->gear, 2, t);
+
+    {
+        char gbuf[12];
+        uint32_t gc = (d->accel_g >  0.1f) ? t->accent :
+                      (d->accel_g < -0.1f) ? t->warn : t->text_secondary;
+        snprintf(gbuf, sizeof(gbuf), "%+.2fG", d->accel_g);
+        gauge_draw_label(300, 166, "G", t->text_secondary, 1);
+        font_draw_str(316, 166, gbuf, gc, 1);
+    }
+
+    if (d->coasting)
+        font_draw_str(418, 166, "COAST", COLOR_GREEN, 1);
+    else if (d->idle)
+        font_draw_str(426, 166, "IDLE", t->text_secondary, 1);
+
+    draw_divider(0, 180, SCREEN_W);
+
+    /* === G-force bar (y=184-198) === */
+    draw_g_bar(8, 184, 464, d->accel_g, t);
+    font_draw_str(8,   198, "-2G", RGBA(70, 70, 70, 255), 1);
+    font_draw_str(232, 198, "0G",  RGBA(70, 70, 70, 255), 1);
+    font_draw_str(452, 198, "+2G", RGBA(70, 70, 70, 255), 1);
+}
+
+/* ------------------------------------------------------------------ */
 /* Status bar (bottom)                                                 */
 /* ------------------------------------------------------------------ */
 
 void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int connected) {
     const Theme *t = theme_current();
     static const char *mode_names[] = {
-        "DIGITAL", "ANALOG", "DIAG", "PERF", "ENGINE", "TRIP", "SENSORS", "ECONOMY", "JDM"
+        "DIGITAL", "ANALOG", "DIAG", "PERF", "ENGINE", "TRIP", "SENSORS", "ECONOMY", "JDM",
+        "TOUGE", "VTEC"
     };
 
     renderer_draw_rect(0, 260, SCREEN_W, 12, RGBA(8, 8, 8, 255));
@@ -1073,6 +1425,8 @@ void dashboard_render(const VehicleState *vs, const DtcList *dtc,
         case DASH_MODE_SENSORS:     dashboard_render_sensors(vs, d);             break;
         case DASH_MODE_ECONOMY:     dashboard_render_economy(vs, d);             break;
         case DASH_MODE_JDM:         dashboard_render_jdm(vs, d);                 break;
+        case DASH_MODE_TOUGE:       dashboard_render_touge(vs, d);               break;
+        case DASH_MODE_VTEC:        dashboard_render_vtec(vs, d);                break;
         default: break;
     }
 }

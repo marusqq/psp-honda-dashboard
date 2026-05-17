@@ -4,7 +4,7 @@
 #define VGATE_DEFAULT_IP    "192.168.0.10"
 #define VGATE_DEFAULT_PORT  35000
 #define SOCKET_BUF_SIZE     256
-#define SOCKET_TIMEOUT_MS   1000
+#define SOCKET_TIMEOUT_MS   400
 
 typedef struct {
     int  fd;

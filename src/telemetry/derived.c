@@ -69,8 +69,7 @@ void derived_compute(DerivedState *d, const VehicleState *vs, uint32_t dt_ms) {
         d->trip_l100km = (d->trip_fuel_l / d->trip_dist_km) * 100.0f;
 
     /* Estimated range */
-    if (vs->supported[PID_FUEL_LEVEL] == 1 &&
-        d->trip_l100km > 0.5f && d->trip_l100km < DERIVED_NO_DATA) {
+    if (vs->supported[PID_FUEL_LEVEL] == 1 && d->trip_l100km > 0.5f) {
         float rem_l = (vs->fuel_level_pct / 100.0f) * DERIVED_TANK_L;
         d->range_km = (rem_l / d->trip_l100km) * 100.0f;
     } else {

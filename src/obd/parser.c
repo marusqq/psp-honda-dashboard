@@ -1,6 +1,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "obd/parser.h"
+#include "obd/pid.h"
 
 int obd_hex_byte(const char *s, uint8_t *out) {
     uint8_t hi, lo;
@@ -51,6 +52,13 @@ ParseResult obd_parse_response(PidIndex pid_idx, const char *resp) {
        bytes[1] = PID code
        bytes[2] = A, bytes[3] = B (if present) */
     if (bytes[0] != 0x41)
+        return result;
+
+    /* Verify the response PID matches what was requested -- ISO 9141-2 can
+       deliver a late response to a previous query; discard mismatches. */
+    uint8_t expected_pid = 0;
+    obd_hex_byte(&PID_TABLE[pid_idx].cmd[2], &expected_pid);
+    if (bytes[1] != expected_pid)
         return result;
 
     uint8_t a = bytes[2];

@@ -115,7 +115,7 @@ int elm327_init(TcpSocket *sock) {
     send_at(sock, "ATL0");  /* linefeeds off */
     send_at(sock, "ATS0");  /* spaces off in responses */
     send_at(sock, "ATH0");  /* headers off */
-    send_at(sock, "ATAT1"); /* adaptive timing mode 1 */
+    send_at(sock, "ATAT2"); /* adaptive timing mode 2 - aggressive timeout reduction */
     send_at(sock, "ATSP3"); /* ISO 9141-2 (pre-CAN Honda/Acura) */
 
     /* Wait for bus detection to complete before handing off to poll loop */
