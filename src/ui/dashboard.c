@@ -1076,14 +1076,49 @@ static void ac_exhaust(int rx, int ry, uint32_t tick) {
     }
 }
 
-/* Scrolling road with center dashes. */
-static void ac_road(int x0, int w, int y0, int h, uint32_t tick) {
+/* City skyline silhouette drawn at bottom of sky, above road. */
+static void ac_skyline(int x0, int y_road) {
+    static const struct { int8_t x; uint8_t w, h; } bld[] = {
+        {  2, 22, 42}, { 28, 16, 58}, { 50, 28, 28},
+        { 82, 20, 62}, {106, 14, 44}, {122, 30, 36},
+        {155, 18, 52}, {177, 20, 40},
+    };
+    uint32_t bc = RGBA(18, 22, 34, 255);
+    uint32_t wc = RGBA(50, 54, 78, 255);
+    int nb = (int)(sizeof(bld) / sizeof(bld[0]));
+    for (int i = 0; i < nb; i++) {
+        int bx = x0 + bld[i].x;
+        int by = y_road - (int)bld[i].h;
+        renderer_draw_rect(bx, by, (int)bld[i].w, (int)bld[i].h, bc);
+        for (int wy = by + 3; wy <= y_road - 8; wy += 8)
+            for (int wx = bx + 3; wx <= bx + (int)bld[i].w - 5; wx += 6)
+                renderer_draw_rect(wx, wy, 2, 2, wc);
+    }
+}
+
+/* Wide smoke cloud billowing from rear wheels on launch. */
+static void ac_tire_smoke(int car_x, int car_y, uint32_t tick) {
+    for (int i = 0; i < 8; i++) {
+        int d  = (int)((tick / 45 + (uint32_t)(i * 5)) % 18);
+        int px = car_x + 4 - d * 3;
+        int py = car_y + 22 - d / 3;
+        if (px < 0) continue;
+        int v  = 170 - d * 8;
+        if (v < 20) continue;
+        int sz = 3 + d / 3;
+        renderer_draw_rect(px, py, sz, sz, RGBA((uint8_t)v,(uint8_t)v,(uint8_t)v,255));
+    }
+}
+
+/* Scrolling road with center dashes; offset is caller-managed for speed-scaling. */
+static void ac_road(int x0, int w, int y0, int h, int offset) {
     renderer_draw_rect(x0, y0,     w, h, AC_ROAD);
     renderer_draw_rect(x0, y0,     w, 2, RGBA(55,55,75,255));
     renderer_draw_rect(x0, y0+h-2, w, 2, RGBA(55,55,75,255));
     int period   = 32;
     int dash_len = 18;
-    int off      = (int)(tick / 35) % period;
+    int off      = offset % period;
+    if (off < 0) off += period;
     int cy       = y0 + h / 2 - 1;
     for (int dx = -(period - off); dx < w + period; dx += period) {
         int sx = x0 + dx, ex = sx + dash_len;
@@ -1129,26 +1164,44 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
     /* ---- MAIN AREA  y=15..148 ---- */
     renderer_draw_rect(200, 15, 1, 134, AC_BORDER);
 
-    /* car scene  x=0..199, y=15..148 */
-    renderer_draw_rect(0, 15, 200, 103, AC_BG);
-    ac_road(0, 200, 118, 30, tick);
-    /* car color: green if RPM >= 5500, red if overtemp, else blue */
+    /* ---- car scene  x=0..199, y=15..148 ---- */
     {
+        /* road offset scales with speed: fast speed = fast dashes */
+        static float    s_road_px   = 0.0f;
+        static uint32_t s_prev_tick = 0;
+        uint32_t dt = tick - s_prev_tick;
+        if (dt > 100) dt = 100;
+        s_prev_tick = tick;
+        s_road_px  += vs->speed_kmh * (float)dt * 0.004f;
+        if (s_road_px >= 32000.0f) s_road_px -= 32000.0f;
+
+        renderer_draw_rect(0, 15, 200, 103, AC_BG);
+        ac_skyline(0, 118);
+        ac_road(0, 200, 118, 30, (int)s_road_px);
+
+        /* bounce ±1px at RPM >= 4000 */
+        int bounce    = (vs->rpm >= 4000.0f) ? ((int)(tick / 55) % 2 ? -1 : 0) : 0;
         int car_state = (vs->coolant_temp_c > 100.0f) ? 2 :
                         (vs->rpm >= 5500.0f)          ? 1 : 0;
-        ac_pixel_car(70, 89, tick, car_state);
-    }
-    ac_exhaust(68, 113, tick);
-    /* sky info: L/100 + trip distance */
-    if (d->instant_l100km > DERIVED_NO_DATA) {
-        char buf[14];
-        snprintf(buf, sizeof(buf), "%.1f L/100", d->instant_l100km);
-        font_draw_str(4, 20, buf, AC_GREEN, 1);
-    }
-    if (d->trip_dist_km > 0.0f) {
-        char buf[10];
-        snprintf(buf, sizeof(buf), "%.1fkm", d->trip_dist_km);
-        font_draw_str(4, 30, buf, AC_DIM, 1);
+        ac_pixel_car(70, 89 + bounce, tick, car_state);
+
+        /* tire smoke on launch, else normal exhaust */
+        if (vs->throttle_pct > 88.0f && vs->speed_kmh < 8.0f)
+            ac_tire_smoke(70, 89 + bounce, tick);
+        else
+            ac_exhaust(68, 113 + bounce, tick);
+
+        /* sky info text */
+        if (d->instant_l100km > DERIVED_NO_DATA) {
+            char buf[14];
+            snprintf(buf, sizeof(buf), "%.1f L/100", d->instant_l100km);
+            font_draw_str(4, 20, buf, AC_GREEN, 1);
+        }
+        if (d->trip_dist_km > 0.0f) {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%.1fkm", d->trip_dist_km);
+            font_draw_str(4, 30, buf, AC_DIM, 1);
+        }
     }
 
     /* right panel  x=203..476, y=15..148  (rw=274) */
