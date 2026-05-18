@@ -34,12 +34,17 @@ Unit tests (host gcc, no PSP SDK needed): `./test_runner` from project root. 64 
   `<psputility_netparam.h>` + `-lpsputility`. Reads saved config SSIDs without connecting.
 - **Makefile INCDIR**: expanded with addprefix -I inside build.mak. Do NOT put
   `-I$(INCDIR)` in CFLAGS - causes duplicate -I.
+- **Threads**: `sceKernelCreateThread` / `sceKernelStartThread` /
+  `sceKernelTerminateDeleteThread`. OBD polling runs in a background kernel thread so
+  the render loop stays at 30fps. Thread sleeps 5ms when not in RUNNING state.
+- **RTC**: `sceRtcGetCurrentClockLocalTime(&t)` returns `ScePspDateTime` with fields
+  `.year .month .day .hour .minute .second` (no trailing 's').
 
 ## Architecture
 
 ```
 src/
-  app.c              main loop, state machine, OBD poll, demo mode, menus
+  app.c              main loop, state machine, OBD poll thread, demo mode, menus
   main.c             PSP kernel entry, callbacks
   net/
     wifi.c           pspnet_apctl connect/disconnect
@@ -58,14 +63,14 @@ src/
   ui/
     renderer.c       sceGu frame begin/end, draw_rect, draw_line, draw_filled_tri
     gauge.c          bar gauges, analog gauges, JDM analog gauge, numeric labels
-    dashboard.c      all 9 dashboard screens + status bar
+    dashboard.c      all 11 dashboard screens + status bar
     themes.c         5 theme definitions with functional properties
     setup.c          setup wizard (WLAN check, slot picker, settings menu)
   input/controls.c   sceCtrl wrapper, pressed/held detection
   config/settings.c  load/save settings to MS
   utils/
     font.c           CP437 8x8 bitmap font renderer (scale 1-N)
-    log.c            LOG_I/W/E macros
+    log.c            LOG_I/W/E macros, append mode, session timestamp on open
     time.c           time_now_ms(), time_sleep_ms()
     memory.c         mem_init()
 
@@ -82,7 +87,7 @@ All in `PidIndex` enum in `include/obd/pid.h`, decoded in `src/obd/pid.c`.
 
 | Group        | PIDs |
 |-------------|------|
-| Core        | RPM, SPEED, COOLANT_TEMP, THROTTLE, IAT, ENGINE_LOAD, VOLTAGE |
+| Core        | RPM, SPEED, COOLANT_TEMP, THROTTLE, IAT, ENGINE_LOAD, VOLTAGE (ATRV) |
 | ECU internals | STFT, LTFT, TIMING_ADV, RUNTIME, FUEL_LEVEL, AMBIENT_TEMP |
 | Sensors     | MAP, MAF, O2_B1S1, O2_B1S2, BARO, REL_THROTTLE, ACCEL_POS, OIL_TEMP, FUEL_RATE, ETHANOL |
 | Diagnostics | MIL_TIME, CLR_TIME, MIL_DIST, CLR_DIST |
@@ -95,6 +100,7 @@ All in `PidIndex` enum in `include/obd/pid.h`, decoded in `src/obd/pid.c`.
 - First valid response: `supported[pid]=1`, `fail_count=0`
 - SEARCHING.../STOPPED/BUS INIT/UNABLE TO CONNECT are transient bus states - do NOT
   count as failures (ELM327 protocol detection in progress)
+- Empty response `resp[0]=='\0'` is also transient - not a failure
 
 ### Scheduler priority
 
@@ -120,6 +126,8 @@ Per-mode PID counts (excluding core):
 | Screen | Extra PIDs polled |
 |---|---|
 | JDM | COOLANT, VOLTAGE, THROTTLE |
+| TOUGE | THROTTLE, ENGINE_LOAD, IAT, COOLANT, TIMING_ADV, O2_B1S1, MAF |
+| VTEC | THROTTLE, ENGINE_LOAD, IAT, COOLANT, STFT, LTFT, TIMING_ADV, O2_B1S1, MAF |
 | ANALOG | COOLANT, ENGINE_LOAD, VOLTAGE, OIL_TEMP |
 | DIGITAL | COOLANT, THROTTLE, IAT, ENGINE_LOAD, VOLTAGE, OIL_TEMP, FUEL_LEVEL |
 | PERF | THROTTLE, ENGINE_LOAD |
@@ -135,25 +143,36 @@ Computed every frame from VehicleState, no extra PIDs needed beyond what's alrea
 
 | Field | How computed |
 |-------|-------------|
-| `gear` | `speed_kmh / rpm` matched against Honda FWD gear ratios (±30% tolerance). 0=neutral, -1=unknown |
-| `instant_l100km` | `(fuel_rate_lh / speed_kmh) * 100`. DERIVED_NO_DATA if speed<5 or no FUEL_RATE PID |
-| `instant_lh` | raw fuel_rate_lh |
+| `gear` | `speed_kmh / rpm` matched against Honda FWD gear ratios (+-30% tolerance). 0=neutral, -1=unknown |
+| `instant_l100km` | `(effective_lh / speed_kmh) * 100`. DERIVED_NO_DATA if speed<5 or no fuel data |
+| `instant_lh` | effective_lh (see fuel rate below) |
 | `trip_l100km` | accumulated over session: `(trip_fuel_l / trip_dist_km) * 100` |
-| `trip_fuel_l` | `sum(fuel_rate_lh * dt_h)` each frame |
+| `trip_fuel_l` | `sum(effective_lh * dt_h)` each frame |
 | `trip_dist_km` | `sum(speed_kmh * dt_h)` each frame |
 | `range_km` | `(fuel_level_pct/100 * 45L) / trip_l100km * 100` (45L assumed tank) |
-| `accel_g` | `delta(speed m/s) / dt_s / 9.81`, clamped ±2G |
+| `accel_g` | `delta(speed m/s) / dt_s / 9.81`, clamped +-2G |
 | `power_pct` | `engine_load_pct * (rpm / 8000)`, 0-100% |
 | `coasting` | throttle<2% && speed>10 && rpm>800 |
 | `idle` | rpm<1100 && speed<3 |
 | `afr_state` | from O2 B1S1 voltage: <0.35V=lean(0), 0.35-0.55V=stoich(1), >0.55V=rich(2), -1=unknown |
+
+### Fuel rate (effective_lh)
+
+2004 Honda Accord does not support PID 015E (FUEL_RATE). Fallback chain:
+1. PID_FUEL_RATE supported: use `vs->fuel_rate_lh` directly
+2. PID_MAF supported: `effective_lh = maf_gs * (3.6 / (14.7 * 0.737))`
+   (stoich AFR 14.7, fuel density 0.737 kg/L)
+3. Neither: `effective_lh = DERIVED_NO_DATA`, fuel economy shows N/A
+
+DERIVED_NO_DATA sentinel = -1.0f. Guard: check `> 0.5f` not `< DERIVED_NO_DATA` (would
+be always-false since -1.0f < -1.0f is never true).
 
 Trip data resets on Triangle press (TRIP or ECONOMY screen).
 
 Assumed Honda gear ratios (speed_kmh/rpm):
 1st=0.0052, 2nd=0.0094, 3rd=0.0142, 4th=0.0195, 5th=0.0267, 6th=0.0337
 
-## Dashboard modes (9 total, cycle with L/R)
+## Dashboard modes (11 total, cycle with L/R)
 
 | Mode | Key content |
 |------|------------|
@@ -166,6 +185,10 @@ Assumed Honda gear ratios (speed_kmh/rpm):
 | SENSORS | MAP+bar, MAF, BARO, fuel rate; O2 B1S1+B1S2 with bars+AFR state label; oil/ethanol/accel/rel-throttle; MIL/CLR counters |
 | ECONOMY | Gear (scale 5, large), instant L/100km or L/h, coasting indicator, trip avg/fuel used/range, AFR state (LEAN/STOICH/RICH), relative power bar, G-force bar |
 | JDM | NFS/JDM style: full-width RPM power band strip (3-zone green/amber/red), large tach (r=100, tick marks every 1000/500 RPM, labels 0-8), large speedo (r=100, tick marks every 20/10 km/h), gear indicator center, coasting/idle flag, bottom strip (throttle bar, coolant, voltage, G-force) |
+| TOUGE | Power band strip, giant gear (scale 6), RPM+speed numerics, VTEC indicator (>5800 RPM), AFR row, data strip (timing/load/IAT/throttle), G-force bar, 8-block shift lights (5500-6500 RPM), fuel economy + coolant bottom |
+| VTEC | RPM strip with VTEC threshold marker, flashing VTEC badge (>5800 RPM), full-width RPM/throttle/load bars with threshold markers, compact trims+timing+AFR row, context strip (coolant/IAT/gear/G), G-force bar |
+
+VTEC_RPM_THRESHOLD = 5800.0f (K20A6 engine, 2004 Accord 2.0L EU).
 
 ## Controls
 
@@ -237,9 +260,34 @@ Start (from any non-menu state) -> MAIN_MENU  (disconnects everything)
 L+R+Start (from any state)      -> MAIN_MENU  (panic, works inside setup too)
 ```
 
-`return_to_main_menu()` in app.c: closes socket, shuts WiFi, resets VehicleState /
-DtcList / filters / scheduler / derived, clears g_demo_mode / g_in_setup /
-g_help_visible / g_obd_status.
+`return_to_main_menu()` in app.c: sets state to MAIN_MENU first, spin-waits up to 600ms
+for `g_obd_poll_busy==0` (lets background thread finish current query), then closes socket,
+shuts WiFi, resets VehicleState / DtcList / filters / scheduler / derived, clears
+g_demo_mode / g_in_setup / g_help_visible / g_obd_status.
+
+### ATRV voltage note
+
+`PID_VOLTAGE` uses cmd `"ATRV"` (ELM327 built-in, not a mode 01 PID). Parser detects
+AT commands by checking `cmd[0]=='A' && cmd[1]=='T'` and parses a float directly from
+the response string (e.g. `"14.2V"` → 14.2). Decode function (`decode_volt`) is kept
+but unused for ATRV; the AT parser path bypasses it and stores the float directly.
+Response format from Vgate iCar 2: `"14.2V"` or similar.
+
+## OBD background thread
+
+OBD polling runs in a dedicated PSP kernel thread (`obd_thread_func`), created in
+`app_init` after `g_running=1`. Thread ID stored in `g_obd_thread_id`.
+
+- Thread polls one PID per iteration via `poll_obd()`, then loops
+- Sleeps 5us between iterations (`sceKernelDelayThread(5)`) when not RUNNING or in demo
+- Detects socket death: tries `elm327_init_quick()` on saved endpoint up to 3 times
+  (no ATZ, no bus_ready, ~300ms per attempt). Dashboard stays visible with overlay.
+  Sets `g_obd_reconnecting=1` during attempt. Falls back to full OBD_CONNECTING only
+  on 3 consecutive failures.
+- Reads DTCs once on connect, retries every 5s on failure
+- `g_obd_poll_busy` volatile int: set 1 before poll, 0 after; used to safely close socket
+- Terminated with `sceKernelTerminateDeleteThread(g_obd_thread_id)` in `app_shutdown`
+- Render loop runs independently at 30fps without waiting for OBD
 
 ## Connecting animation
 
@@ -273,9 +321,20 @@ Same road+car animation appears on the main menu at bottom of screen.
 
 `elm327_init()` after successful probe:
 1. ATZ (full reset, 500ms wait)
-2. ATE0 / ATL0 / ATS0 / ATH0 / ATAT1 / ATSP0 (echo off, spaces off, headers off, auto protocol)
-3. `elm327_wait_bus_ready()`: polls 0100 until response is NOT SEARCHING.../STOPPED/BUS INIT,
-   max 10s. Honda protocol detection takes 5-10s; this prevents premature polling.
+2. ATE0 / ATL0 / ATS0 / ATH0 (echo off, spaces off, headers off)
+3. ATAT2 (adaptive timing mode 2 - aggressive timeout reduction)
+4. ATSP3 (ISO 9141-2 -- required for pre-CAN 2004 Honda Accord; ATSP0 auto-detect tries
+   CAN protocols first and times out on this car)
+5. `elm327_wait_bus_ready()`: polls 0100 until response is NOT SEARCHING.../STOPPED/BUS INIT,
+   max 15s. ISO 9141-2 bus init takes 3-5s at 10.4 kbaud; this prevents premature polling.
+
+Socket timeout: 400ms (`SOCKET_TIMEOUT_MS` in include/net/socket.h).
+
+## Parser PID validation (src/obd/parser.c)
+
+ISO 9141-2 can deliver late responses for a previous query while a new one is in flight.
+Parser validates `bytes[1]` against the expected PID byte from `PID_TABLE[pid_idx].cmd[2]`
+before accepting any response. Mismatched responses return empty result (not a failure).
 
 ## OBD poll logging (debug)
 
@@ -287,6 +346,9 @@ Extensive LOG_D/I output for each frame:
 - Unrecognised response: `LOG_W`
 - active_mask change on mode switch: `LOG_I("active_mask 0x%08x -> 0x%08x (mode %d)")`
 - OBD connect start: `LOG_I` with endpoint and poll_interval_ms
+
+Log file opens in append mode. Each session stamped with:
+`=== SESSION START YYYY-MM-DD HH:MM:SS ===`
 
 ## Demo mode
 
@@ -316,9 +378,23 @@ semi-transparent dark panel (50px inset) over the current dashboard frame showin
   during protocol negotiation (5-10s on Honda). Old code counted these as PID failures,
   hitting fail_count>=3 -> skip=1 for every PID. Fixed: only NO DATA and '?' count.
 
-- **Bus not ready when poll loop starts**: ATSP0 detection takes 5-10s. Old code started
+- **ATSP0 never resolving on 2004 Honda Accord**: Auto-detect tries CAN protocols first,
+  times out on ISO 9141-2 bus. Fixed: hardcode ATSP3 (ISO 9141-2).
+
+- **Bus not ready when poll loop starts**: Protocol detection takes 3-5s. Old code started
   polling immediately after elm327_init returned, getting SEARCHING on all queries.
-  Fixed: `elm327_wait_bus_ready()` waits up to 10s for first valid 0100 response.
+  Fixed: `elm327_wait_bus_ready()` waits up to 15s for first valid 0100 response.
+
+- **ISO 9141-2 PID mismatch**: Late bus responses for a previous query accepted as current PID.
+  Fixed: parser validates bytes[1] against expected PID byte before accepting response.
+
+- **OBD polling blocking render**: poll_obd() blocked the frame loop 300-400ms per query.
+  Fixed: OBD moved to background PSP kernel thread; render runs at 30fps independently.
+
+- **Fuel rate always N/A on 2004 Accord**: PID 015E not in ECU. Fixed: MAF-based fallback.
+
+- **Impossible range_km condition**: `trip_l100km < DERIVED_NO_DATA` where DERIVED_NO_DATA=-1.0f
+  was always false. Fixed: guard is just `trip_l100km > 0.5f`.
 
 - **Double `input_update`**: Two calls per frame zeroed pressed bits -> L/R/X never
   registered in RUNNING state. Fixed: single call inside `handle_input()`.
@@ -333,11 +409,27 @@ semi-transparent dark panel (50px inset) over the current dashboard frame showin
 - **Setup welcome screen text overlap**: "2. WLAN switch:" rendered at y=108 (126-18),
   "Make sure:" at y=110. Fixed: WLAN item now at y=142, proper sequential layout.
 
+- **Mid-drive reconnect shows connecting screen for 5-15s**: Socket drop triggered
+  full elm327_probe (8 candidates) + ATZ + bus_ready on every reconnect. Fixed:
+  OBD thread attempts `elm327_init_quick()` (flush + ATE0/S0/H0/ATAT2/ATSP3, no ATZ,
+  no bus_ready) on saved endpoint directly. Dashboard stays visible with
+  "RECONNECTING..." overlay. Falls back to full connecting screen only after 3 failures.
+
+- **Stale resp logged on socket timeout**: `elm327_send_cmd` didn't zero-init `resp`
+  before recv loop. On timeout with 0 bytes read, logged previous call's stale buffer
+  value. Fixed: `resp[0] = '\0'` before loop.
+
+- **Voltage always N/A on 2004 Accord**: PID 0142 (control module voltage) not supported
+  by ECU. Fixed: use ELM327's own `ATRV` command instead -- reads battery voltage
+  directly from OBD2 connector, returns `"14.2V"` format. Parser handles AT commands
+  via float-from-string path (AT cmd check before mode-01 hex parsing).
+
 ## Pending / future
 
 - Main1 / Main2 configurable dashboard screens (user picks which widgets to show)
 - Tank size as user setting (currently hardcoded 45L in derived.c DERIVED_TANK_L)
 - Gear ratio calibration per Honda model (currently generic FWD estimates)
 - MAF-based HP/torque estimate (requires engine displacement as user input)
-- Push EBOOT.PBP to device and verify all 9 screens on hardware
+- Remove some existing dashboards (user requested; will decide after testing all 11)
+- Verify all 11 screens on hardware; identify any remaining NaN displays
 - Verify selective polling on real hardware (stale PID data on mode switch should recover within 1-2 poll cycles)

@@ -121,15 +121,6 @@ static void fmt_runtime(float s, char *buf, int sz) {
         snprintf(buf, sz, "%dm %02ds", m, ss);
 }
 
-/* Format minutes -> "Xh Ym" or "X min" */
-static void fmt_minutes(float min_f, char *buf, int sz) {
-    int m = (int)min_f;
-    if (m >= 60)
-        snprintf(buf, sz, "%dh %dm", m / 60, m % 60);
-    else
-        snprintf(buf, sz, "%d min", m);
-}
-
 /* ------------------------------------------------------------------ */
 /* Digital dashboard                                                   */
 /* ------------------------------------------------------------------ */
@@ -200,132 +191,9 @@ void dashboard_render_digital(const VehicleState *vs, const DerivedState *d) {
 /* Analog gauge dashboard                                              */
 /* ------------------------------------------------------------------ */
 
-void dashboard_render_analog(const VehicleState *vs, const DerivedState *d) {
-    const Theme *t = theme_current();
-    int fs = t->font_scale;
-
-    static GaugeDef tach = {
-        .cx=136, .cy=136, .radius=110,
-        .min_val=0.0f, .max_val=8000.0f, .redline=6500.0f,
-        .start_angle=PI_F * 0.75f, .sweep_angle=PI_F * 1.5f, .anim_val=0.0f,
-    };
-    gauge_draw_analog(&tach, vs->rpm);
-    gauge_draw_numeric(tach.cx - 30, tach.cy + tach.radius - 30,
-                       vs->rpm, "%.0f", "rpm", t->text_primary, fs);
-    gauge_draw_label(tach.cx - 16, tach.cy - 10, "RPM", t->text_secondary, 1);
-
-    static GaugeDef spd = {
-        .cx=344, .cy=136, .radius=110,
-        .min_val=0.0f, .max_val=240.0f, .redline=999.0f,
-        .start_angle=PI_F * 0.75f, .sweep_angle=PI_F * 1.5f, .anim_val=0.0f,
-    };
-    gauge_draw_analog(&spd, vs->speed_kmh);
-    gauge_draw_numeric(spd.cx - 30, spd.cy + spd.radius - 30,
-                       vs->speed_kmh, "%.0f", "km/h", t->text_primary, fs);
-    gauge_draw_label(spd.cx - 20, spd.cy - 10, "SPEED", t->text_secondary, 1);
-
-    /* Gear in centre between gauges */
-    gauge_draw_label(224, 8, "GEAR", t->text_secondary, 1);
-    draw_gear(228, 20, d->gear, 3, t);
-
-    draw_divider(0, 244, SCREEN_W);
-    gauge_draw_label(10,  249, "COOL", t->text_secondary, 1);
-    gauge_draw_numeric(44, 249, vs->coolant_temp_c, "%.0f", "C", t->text_primary, 1);
-    gauge_draw_label(120, 249, "LOAD", t->text_secondary, 1);
-    gauge_draw_numeric(154,249, vs->engine_load_pct, "%.0f", "%", t->text_primary, 1);
-    gauge_draw_label(220, 249, "VOLT", t->text_secondary, 1);
-    gauge_draw_numeric(254,249, vs->voltage_v, "%.1f", "V", t->text_primary, 1);
-    gauge_draw_label(320, 249, "OIL", t->text_secondary, 1);
-    draw_fa(348, 249, vs->oil_temp_c, "%.0f", "C",
-            vs->supported[PID_OIL_TEMP], t->text_primary, 1, t);
-    gauge_draw_label(420, 249, "GEAR", t->text_secondary, 1);
-    draw_gear(454, 249, d->gear, 1, t);
-}
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics dashboard                                               */
-/* ------------------------------------------------------------------ */
-
-void dashboard_render_diagnostics(const VehicleState *vs, const DtcList *dtc) {
-    const Theme *t = theme_current();
-
-    gauge_draw_label(10, 10, "DIAGNOSTIC TROUBLE CODES", t->accent, 1);
-    draw_divider(0, 22, SCREEN_W);
-
-    if (!dtc->read_ok) {
-        font_draw_str(10, 40, "Reading DTCs...", t->text_secondary, 1);
-    } else if (dtc->count == 0) {
-        font_draw_str(10, 40, "No fault codes. System OK.", t->text_primary, 1);
-        renderer_draw_rect(10, 60, 12, 12, COLOR_GREEN);
-    } else {
-        char line[32];
-        for (int i = 0; i < dtc->count && i < 8; i++) {
-            snprintf(line, sizeof(line), "P%d  %s", i + 1, dtc->codes[i]);
-            uint32_t rc = (i % 2 == 0) ? t->danger : t->warn;
-            font_draw_str(10, 40 + i * 18, line, rc, 1);
-        }
-    }
-
-    draw_divider(0, 192, SCREEN_W);
-
-    gauge_draw_label(10, 198, "LIVE: RPM", t->text_secondary, 1);
-    gauge_draw_numeric(80, 198, vs->rpm, "%.0f", "", t->text_primary, 1);
-    gauge_draw_label(150, 198, "SPD", t->text_secondary, 1);
-    gauge_draw_numeric(182, 198, vs->speed_kmh, "%.0f", "", t->text_primary, 1);
-
-    draw_divider(0, 212, SCREEN_W);
-
-    gauge_draw_label(10, 218, "MIL ON", t->text_secondary, 1);
-    {
-        char buf[24];
-        if (vs->supported[PID_MIL_TIME] == 1) {
-            fmt_minutes(vs->mil_time_min, buf, sizeof(buf));
-            uint32_t mc = (vs->mil_time_min > 0) ? t->warn : t->text_primary;
-            font_draw_str(64, 218, buf, mc, 1);
-        } else {
-            font_draw_str(64, 218, vs->supported[PID_MIL_TIME] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    gauge_draw_label(200, 218, "DIST MIL", t->text_secondary, 1);
-    {
-        char buf[16];
-        if (vs->supported[PID_MIL_DIST] == 1) {
-            snprintf(buf, sizeof(buf), "%.0f km", vs->mil_dist_km);
-            uint32_t mc = (vs->mil_dist_km > 0) ? t->warn : t->text_primary;
-            font_draw_str(272, 218, buf, mc, 1);
-        } else {
-            font_draw_str(272, 218, vs->supported[PID_MIL_DIST] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    gauge_draw_label(10, 234, "SINCE CLR", t->text_secondary, 1);
-    {
-        char buf[24];
-        if (vs->supported[PID_CLR_TIME] == 1) {
-            fmt_minutes(vs->clr_time_min, buf, sizeof(buf));
-            font_draw_str(82, 234, buf, t->text_primary, 1);
-        } else {
-            font_draw_str(82, 234, vs->supported[PID_CLR_TIME] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    gauge_draw_label(200, 234, "DIST CLR", t->text_secondary, 1);
-    {
-        char buf[16];
-        if (vs->supported[PID_CLR_DIST] == 1) {
-            snprintf(buf, sizeof(buf), "%.0f km", vs->clr_dist_km);
-            font_draw_str(272, 234, buf, t->text_primary, 1);
-        } else {
-            font_draw_str(272, 234, vs->supported[PID_CLR_DIST] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-}
-
 /* ------------------------------------------------------------------ */
 /* Performance dashboard                                               */
 /* ------------------------------------------------------------------ */
@@ -499,414 +367,155 @@ void dashboard_render_engine(const VehicleState *vs) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Trip & status dashboard                                             */
+/* Combined Economy + Trip dashboard                                   */
 /* ------------------------------------------------------------------ */
 
 static int g_trip_reset = 0;
 void dashboard_trip_reset_session(void) { g_trip_reset = 1; }
 
-void dashboard_render_trip(const VehicleState *vs, const DerivedState *d) {
+void dashboard_render_ecotrip(const VehicleState *vs, const DerivedState *d) {
     const Theme *t = theme_current();
 
-    static float sess_max_speed = 0.0f;
-    static float sess_max_rpm   = 0.0f;
+    static float s_peak_speed = 0.0f;
+    static float s_peak_rpm   = 0.0f;
     if (g_trip_reset) {
-        sess_max_speed = 0.0f;
-        sess_max_rpm   = 0.0f;
-        g_trip_reset   = 0;
+        s_peak_speed = 0.0f;
+        s_peak_rpm   = 0.0f;
+        g_trip_reset = 0;
     }
-    if (vs->speed_kmh > sess_max_speed) sess_max_speed = vs->speed_kmh;
-    if (vs->rpm       > sess_max_rpm)   sess_max_rpm   = vs->rpm;
+    if (vs->speed_kmh > s_peak_speed) s_peak_speed = vs->speed_kmh;
+    if (vs->rpm       > s_peak_rpm)   s_peak_rpm   = vs->rpm;
 
-    gauge_draw_label(10, 6, "TRIP & STATUS", t->accent, 1);
+    gauge_draw_label(10, 6, "ECO & TRIP", t->accent, 1);
     draw_divider(0, 18, SCREEN_W);
 
-    /* Engine runtime */
-    gauge_draw_label(10, 24, "ENGINE RUNTIME", t->text_secondary, 1);
-    char rtbuf[24];
-    fmt_runtime(vs->runtime_s, rtbuf, sizeof(rtbuf));
-    font_draw_str(10, 36, rtbuf, t->text_primary, 2);
+    /* --- Gear + Instant consumption --- */
+    gauge_draw_label(10, 24, "GEAR", t->text_secondary, 1);
+    draw_gear(10, 36, d->gear, 5, t);
 
-    draw_divider(0, 68, SCREEN_W);
-
-    /* Fuel level */
-    gauge_draw_label(10, 74, "FUEL LEVEL", t->text_secondary, 1);
-    uint32_t fl_col = (vs->fuel_level_pct < 15.0f) ? t->danger :
-                      (vs->fuel_level_pct < 25.0f) ? t->warn : t->gauge_fill;
-    char fbuf[8];
-    snprintf(fbuf, sizeof(fbuf), "%.0f%%", vs->fuel_level_pct);
-    font_draw_str(10, 86, fbuf, fl_col, 2);
-    gauge_draw_bar(10, 110, 240, 12,
-                   vs->fuel_level_pct, 0.0f, 100.0f, fl_col, t->gauge_track);
-
-    /* Fuel rate + derived fuel economy */
-    gauge_draw_label(270, 74, "FUEL RATE", t->text_secondary, 1);
-    draw_fa(270, 86, vs->fuel_rate_lh, "%.1f", "L/h",
-            vs->supported[PID_FUEL_RATE], t->text_primary, 2, t);
-
-    gauge_draw_label(380, 74, "AVG", t->text_secondary, 1);
-    if (d->trip_l100km > 0.0f) {
-        char abuf[12];
-        snprintf(abuf, sizeof(abuf), "%.1f", d->trip_l100km);
-        font_draw_str(380, 86, abuf, t->text_primary, 2);
-        font_draw_str(380, 104, "L/100km", t->text_secondary, 1);
-    } else {
-        font_draw_str(380, 86, "---", t->text_secondary, 2);
-    }
-
-    draw_divider(0, 128, SCREEN_W);
-
-    /* Temperature block */
-    gauge_draw_label(10, 134, "AMBIENT", t->text_secondary, 1);
-    gauge_draw_numeric(74, 134, vs->ambient_temp_c, "%.1f", "C", t->text_primary, 1);
-
-    gauge_draw_label(160, 134, "IAT", t->text_secondary, 1);
-    gauge_draw_numeric(192, 134, vs->iat_c, "%.0f", "C", t->text_primary, 1);
-
-    gauge_draw_label(260, 134, "COOLANT", t->text_secondary, 1);
-    uint32_t ct_col = (vs->coolant_temp_c > 100.0f) ? t->danger :
-                      (vs->coolant_temp_c > 90.0f)  ? t->warn : t->text_primary;
-    gauge_draw_numeric(324, 134, vs->coolant_temp_c, "%.0f", "C", ct_col, 1);
-
-    gauge_draw_label(10, 150, "OIL", t->text_secondary, 1);
-    draw_fa(38, 150, vs->oil_temp_c, "%.0f", "C",
-            vs->supported[PID_OIL_TEMP], t->text_primary, 1, t);
-
-    gauge_draw_label(110, 150, "VOLTAGE", t->text_secondary, 1);
-    uint32_t v_col = (vs->voltage_v < 11.5f) ? t->danger :
-                     (vs->voltage_v < 12.0f) ? t->warn : t->text_primary;
-    gauge_draw_numeric(176, 150, vs->voltage_v, "%.2f", "V", v_col, 1);
-
-    gauge_draw_label(260, 150, "ETHANOL", t->text_secondary, 1);
-    draw_fa(324, 150, vs->ethanol_pct, "%.1f", "%",
-            vs->supported[PID_ETHANOL], t->text_primary, 1, t);
-
-    draw_divider(0, 164, SCREEN_W);
-
-    /* Trip derived stats */
-    gauge_draw_label(10, 170, "TRIP DIST", t->text_secondary, 1);
-    {
-        char buf[12];
-        snprintf(buf, sizeof(buf), "%.1f km", d->trip_dist_km);
-        font_draw_str(10, 182, buf, t->text_primary, 1);
-    }
-
-    gauge_draw_label(140, 170, "FUEL USED", t->text_secondary, 1);
-    {
-        char buf[12];
-        if (d->trip_fuel_l > 0.0f) {
-            snprintf(buf, sizeof(buf), "%.2f L", d->trip_fuel_l);
-            font_draw_str(140, 182, buf, t->text_primary, 1);
-        } else {
-            font_draw_str(140, 182, "--- L", t->text_secondary, 1);
-        }
-    }
-
-    gauge_draw_label(280, 170, "RANGE EST.", t->text_secondary, 1);
-    {
-        char buf[12];
-        if (d->range_km > 0.0f) {
-            snprintf(buf, sizeof(buf), "%.0f km", d->range_km);
-            uint32_t rc = (d->range_km < 50.0f) ? t->danger :
-                          (d->range_km < 100.0f) ? t->warn : t->text_primary;
-            font_draw_str(280, 182, buf, rc, 1);
-        } else {
-            font_draw_str(280, 182, "--- km", t->text_secondary, 1);
-        }
-    }
-
-    draw_divider(0, 196, SCREEN_W);
-
-    /* Session peaks */
-    gauge_draw_label(10, 202, "SESSION PEAK", t->accent, 1);
-    gauge_draw_label(10, 214, "SPEED", t->text_secondary, 1);
-    gauge_draw_numeric(54, 214, sess_max_speed, "%.0f", "km/h", t->text_primary, 1);
-    gauge_draw_label(160, 214, "RPM", t->text_secondary, 1);
-    gauge_draw_numeric(196, 214, sess_max_rpm, "%.0f", "", t->text_primary, 1);
-    font_draw_str(320, 214, "Triangle: reset", t->text_secondary, 1);
-}
-
-/* ------------------------------------------------------------------ */
-/* Sensors dashboard                                                   */
-/* ------------------------------------------------------------------ */
-
-void dashboard_render_sensors(const VehicleState *vs, const DerivedState *d) {
-    const Theme *t = theme_current();
-
-    gauge_draw_label(10, 6, "ENGINE SENSORS", t->accent, 1);
-    draw_divider(0, 18, SCREEN_W);
-
-    int col2 = 240;
-
-    gauge_draw_label(10, 24, "MAP", t->text_secondary, 1);
-    draw_fa(46, 24, vs->map_kpa, "%.0f", "kPa",
-            vs->supported[PID_MAP], t->text_primary, 1, t);
-    if (vs->supported[PID_MAP] == 1) {
-        gauge_draw_bar(46, 34, 160, 8,
-                       vs->map_kpa, 20.0f, 105.0f, t->gauge_fill, t->gauge_track);
-    }
-
-    gauge_draw_label(col2, 24, "MAF", t->text_secondary, 1);
-    draw_fa(col2 + 36, 24, vs->maf_gs, "%.1f", "g/s",
-            vs->supported[PID_MAF], t->text_primary, 1, t);
-
-    gauge_draw_label(10, 48, "BARO", t->text_secondary, 1);
-    draw_fa(46, 48, vs->baro_kpa, "%.0f", "kPa",
-            vs->supported[PID_BARO], t->text_primary, 1, t);
-
-    gauge_draw_label(col2, 48, "FUEL RATE", t->text_secondary, 1);
-    draw_fa(col2 + 82, 48, vs->fuel_rate_lh, "%.2f", "L/h",
-            vs->supported[PID_FUEL_RATE], t->text_primary, 1, t);
-
-    draw_divider(0, 64, SCREEN_W);
-
-    /* O2 upstream - with AFR interpretation */
-    gauge_draw_label(10, 70, "O2 UPSTREAM  (B1S1)", t->text_secondary, 1);
-    if (vs->supported[PID_O2_B1S1] == 1) {
-        gauge_draw_numeric(200, 70, vs->o2_b1s1_v, "%.3f", "V", t->text_primary, 1);
-        gauge_draw_bar(10, 82, 460, 12,
-                       vs->o2_b1s1_v, 0.0f, 1.275f, t->gauge_fill, t->gauge_track);
-
-        /* AFR state label on same line as interpretation note */
-        if (d->afr_state >= 0) {
-            static const char *afl[] = { "LEAN", "STOICH", "RICH" };
-            font_draw_str(10, 98, "AFR:", t->text_secondary, 1);
-            uint32_t afc = (d->afr_state == 0) ? t->danger :
-                           (d->afr_state == 1) ? COLOR_GREEN : t->warn;
-            font_draw_str(42, 98, afl[d->afr_state], afc, 1);
-            font_draw_str(100, 98, "   cycling 0.1-0.9V = closed loop OK",
-                          t->text_secondary, 1);
-        } else {
-            font_draw_str(10, 98, "0.1-0.9V switching = closed loop OK",
-                          t->text_secondary, 1);
-        }
-    } else {
-        font_draw_str(200, 70,
-                      vs->supported[PID_O2_B1S1] == 2 ? "N/A" : "...",
-                      RGBA(70,70,70,255), 1);
-    }
-
-    gauge_draw_label(10, 112, "O2 DOWNSTREAM (B1S2)", t->text_secondary, 1);
-    if (vs->supported[PID_O2_B1S2] == 1) {
-        gauge_draw_numeric(208, 112, vs->o2_b1s2_v, "%.3f", "V", t->text_primary, 1);
-        uint32_t o2_col = (vs->o2_b1s2_v > 0.5f && vs->o2_b1s2_v < 0.8f)
-                          ? COLOR_GREEN : t->warn;
-        gauge_draw_bar(10, 124, 460, 12,
-                       vs->o2_b1s2_v, 0.0f, 1.275f, o2_col, t->gauge_track);
-        font_draw_str(10, 140, "0.5-0.8V steady = catalyst working",
-                      t->text_secondary, 1);
-    } else {
-        font_draw_str(208, 112,
-                      vs->supported[PID_O2_B1S2] == 2 ? "N/A" : "...",
-                      RGBA(70,70,70,255), 1);
-    }
-
-    draw_divider(0, 156, SCREEN_W);
-
-    gauge_draw_label(10, 162, "OIL TEMP", t->text_secondary, 1);
-    draw_fa(82, 162, vs->oil_temp_c, "%.0f", "C",
-            vs->supported[PID_OIL_TEMP], t->text_primary, 1, t);
-
-    gauge_draw_label(col2, 162, "ETHANOL", t->text_secondary, 1);
-    draw_fa(col2 + 70, 162, vs->ethanol_pct, "%.1f", "%",
-            vs->supported[PID_ETHANOL], t->text_primary, 1, t);
-
-    gauge_draw_label(10, 178, "ACCEL POS", t->text_secondary, 1);
-    draw_fa(82, 178, vs->accel_pos_pct, "%.1f", "%",
-            vs->supported[PID_ACCEL_POS], t->text_primary, 1, t);
-
-    gauge_draw_label(col2, 178, "REL THROT", t->text_secondary, 1);
-    draw_fa(col2 + 82, 178, vs->rel_throttle_pct, "%.1f", "%",
-            vs->supported[PID_REL_THROTTLE], t->text_primary, 1, t);
-
-    draw_divider(0, 194, SCREEN_W);
-
-    gauge_draw_label(10, 200, "MIL ON", t->text_secondary, 1);
-    {
-        char buf[20];
-        if (vs->supported[PID_MIL_TIME] == 1) {
-            fmt_minutes(vs->mil_time_min, buf, sizeof(buf));
-            uint32_t mc = (vs->mil_time_min > 0) ? t->warn : t->text_primary;
-            font_draw_str(64, 200, buf, mc, 1);
-        } else {
-            font_draw_str(64, 200,
-                          vs->supported[PID_MIL_TIME] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    gauge_draw_label(col2, 200, "SINCE CLR", t->text_secondary, 1);
-    {
-        char buf[20];
-        if (vs->supported[PID_CLR_TIME] == 1) {
-            fmt_minutes(vs->clr_time_min, buf, sizeof(buf));
-            font_draw_str(col2 + 82, 200, buf, t->text_primary, 1);
-        } else {
-            font_draw_str(col2 + 82, 200,
-                          vs->supported[PID_CLR_TIME] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    gauge_draw_label(10, 216, "DIST MIL", t->text_secondary, 1);
-    {
-        char buf[16];
-        if (vs->supported[PID_MIL_DIST] == 1) {
-            snprintf(buf, sizeof(buf), "%.0f km", vs->mil_dist_km);
-            uint32_t mc = (vs->mil_dist_km > 0) ? t->warn : t->text_primary;
-            font_draw_str(74, 216, buf, mc, 1);
-        } else {
-            font_draw_str(74, 216,
-                          vs->supported[PID_MIL_DIST] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    gauge_draw_label(col2, 216, "DIST CLR", t->text_secondary, 1);
-    {
-        char buf[16];
-        if (vs->supported[PID_CLR_DIST] == 1) {
-            snprintf(buf, sizeof(buf), "%.0f km", vs->clr_dist_km);
-            font_draw_str(col2 + 74, 216, buf, t->text_primary, 1);
-        } else {
-            font_draw_str(col2 + 74, 216,
-                          vs->supported[PID_CLR_DIST] == 2 ? "N/A" : "...",
-                          RGBA(70,70,70,255), 1);
-        }
-    }
-
-    draw_divider(0, 232, SCREEN_W);
-    font_draw_str(10, 237, "N/A = PID not supported by this ECU",
-                  RGBA(70, 70, 70, 255), 1);
-}
-
-/* ------------------------------------------------------------------ */
-/* Economy dashboard                                                   */
-/* ------------------------------------------------------------------ */
-
-void dashboard_render_economy(const VehicleState *vs, const DerivedState *d) {
-    const Theme *t = theme_current();
-
-    gauge_draw_label(10, 6, "ECONOMY & EFFICIENCY", t->accent, 1);
-    draw_divider(0, 18, SCREEN_W);
-
-    /* --- Top: Gear (left) + Instant consumption (right) --- */
-    gauge_draw_label(10, 26, "GEAR", t->text_secondary, 1);
-    draw_gear(10, 38, d->gear, 5, t);   /* scale 5 = 40px digit */
-
-    gauge_draw_label(250, 26, "INSTANT", t->text_secondary, 1);
-    if (vs->supported[PID_FUEL_RATE] != 1) {
-        font_draw_str(250, 38, "N/A", RGBA(70,70,70,255), 2);
-        font_draw_str(250, 58, "(needs PID 015E)", RGBA(70,70,70,255), 1);
+    gauge_draw_label(250, 24, "INSTANT", t->text_secondary, 1);
+    if (d->instant_lh == DERIVED_NO_DATA && !d->coasting && !d->idle) {
+        font_draw_str(250, 36, "---", t->text_secondary, 2);
+        font_draw_str(250, 56, "no fuel data", RGBA(70,70,70,255), 1);
     } else if (d->coasting) {
-        font_draw_str(250, 38, "COASTING", COLOR_GREEN, 2);
-        font_draw_str(250, 58, "fuel cut", t->text_secondary, 1);
-    } else if (d->idle) {
-        gauge_draw_numeric(250, 38, vs->fuel_rate_lh, "%.2f", "L/h",
-                           t->text_primary, 2);
-        font_draw_str(250, 58, "at idle", t->text_secondary, 1);
+        font_draw_str(250, 36, "COAST", COLOR_GREEN, 2);
+        font_draw_str(250, 56, "fuel cut", t->text_secondary, 1);
+    } else if (d->idle && d->instant_lh > 0.0f) {
+        gauge_draw_numeric(250, 36, d->instant_lh, "%.2f", "L/h", t->text_primary, 2);
+        font_draw_str(250, 56, "at idle", t->text_secondary, 1);
     } else if (d->instant_l100km > 0.0f) {
-        gauge_draw_numeric(250, 38, d->instant_l100km, "%.1f", "L/100km",
-                           t->text_primary, 2);
+        gauge_draw_numeric(250, 36, d->instant_l100km, "%.1f", "L/100", t->text_primary, 2);
     } else {
-        font_draw_str(250, 38, "---", t->text_secondary, 2);
+        font_draw_str(250, 36, "---", t->text_secondary, 2);
     }
 
-    draw_divider(0, 88, SCREEN_W);
+    draw_divider(0, 90, SCREEN_W);
 
-    /* --- Middle: Trip stats --- */
-    gauge_draw_label(10,  94, "TRIP AVG", t->text_secondary, 1);
-    gauge_draw_label(180, 94, "FUEL USED", t->text_secondary, 1);
-    gauge_draw_label(350, 94, "RANGE", t->text_secondary, 1);
+    /* --- Trip stats + fuel bar --- */
+    gauge_draw_label(10,  96, "TRIP AVG",  t->text_secondary, 1);
+    gauge_draw_label(180, 96, "USED",      t->text_secondary, 1);
+    gauge_draw_label(300, 96, "RANGE",     t->text_secondary, 1);
 
-    /* Trip avg L/100km */
     if (d->trip_l100km > 0.0f) {
         char buf[12];
-        snprintf(buf, sizeof(buf), "%.1f", d->trip_l100km);
-        font_draw_str(10, 106, buf, t->text_primary, 2);
-        font_draw_str(10, 124, "L/100km", t->text_secondary, 1);
+        snprintf(buf, sizeof(buf), "%.1f L/100", d->trip_l100km);
+        font_draw_str(10, 108, buf, t->text_primary, 1);
     } else {
-        font_draw_str(10, 106, "---", t->text_secondary, 2);
+        font_draw_str(10, 108, "---", t->text_secondary, 1);
     }
 
-    /* Trip fuel used */
-    if (d->trip_fuel_l > 0.0f) {
+    {
         char buf[12];
-        snprintf(buf, sizeof(buf), "%.2f L", d->trip_fuel_l);
-        font_draw_str(180, 106, buf, t->text_primary, 1);
-    } else {
-        font_draw_str(180, 106, "---", t->text_secondary, 1);
+        if (d->trip_fuel_l > 0.0f)
+            snprintf(buf, sizeof(buf), "%.2f L", d->trip_fuel_l);
+        else
+            snprintf(buf, sizeof(buf), "---");
+        font_draw_str(180, 108, buf, d->trip_fuel_l > 0.0f ? t->text_primary : t->text_secondary, 1);
     }
 
-    /* Estimated range */
     if (d->range_km > 0.0f) {
         uint32_t rc = (d->range_km < 50.0f)  ? t->danger :
                       (d->range_km < 100.0f) ? t->warn : t->text_primary;
         char buf[12];
         snprintf(buf, sizeof(buf), "%.0f km", d->range_km);
-        font_draw_str(350, 106, buf, rc, 1);
+        font_draw_str(300, 108, buf, rc, 1);
     } else {
-        font_draw_str(350, 106, "---", t->text_secondary, 1);
+        font_draw_str(300, 108, "---", t->text_secondary, 1);
     }
 
-    draw_divider(0, 136, SCREEN_W);
+    /* Fuel level bar */
+    {
+        uint32_t fl_col = (vs->fuel_level_pct < 15.0f) ? t->danger :
+                          (vs->fuel_level_pct < 25.0f) ? t->warn : t->gauge_fill;
+        gauge_draw_bar(10, 122, 350, 10,
+                       vs->fuel_level_pct, 0.0f, 100.0f, fl_col, t->gauge_track);
+        char fbuf[12];
+        snprintf(fbuf, sizeof(fbuf), "%.0f%% fuel", vs->fuel_level_pct);
+        font_draw_str(370, 122, fbuf, fl_col, 1);
+    }
 
-    /* --- AFR status + relative power --- */
-    gauge_draw_label(10, 142, "AFR STATUS", t->text_secondary, 1);
+    draw_divider(0, 140, SCREEN_W);
+
+    /* --- AFR + relative power --- */
+    gauge_draw_label(10, 146, "AFR STATUS", t->text_secondary, 1);
     if (d->afr_state < 0) {
-        font_draw_str(10, 154, "unknown", RGBA(70,70,70,255), 1);
-        font_draw_str(10, 164, "(needs O2 sensor PID 0114)", RGBA(70,70,70,255), 1);
+        font_draw_str(10, 158, "---", RGBA(70,70,70,255), 1);
     } else {
-        static const char *afl[] = { "LEAN", "STOICH", "RICH" };
-        static const char *afd[] = {
-            "too little fuel - check trims",
-            "ideal air-fuel ratio",
-            "too much fuel - check trims"
-        };
+        static const char *afl[] = {"LEAN", "STOICH", "RICH"};
+        static const char *afd[] = {"too little fuel", "ideal AFR", "too much fuel"};
         uint32_t afc = (d->afr_state == 0) ? t->danger :
                        (d->afr_state == 1) ? COLOR_GREEN : t->warn;
-        font_draw_str(10, 154, afl[d->afr_state], afc, 2);
-        font_draw_str(10, 172, afd[d->afr_state], t->text_secondary, 1);
+        font_draw_str(10, 158, afl[d->afr_state], afc, 2);
+        font_draw_str(10, 176, afd[d->afr_state], t->text_secondary, 1);
     }
 
-    gauge_draw_label(270, 142, "RELATIVE POWER", t->text_secondary, 1);
-    gauge_draw_bar(270, 154, 190, 14,
+    gauge_draw_label(270, 146, "POWER", t->text_secondary, 1);
+    gauge_draw_bar(270, 158, 190, 12,
                    d->power_pct, 0.0f, 100.0f, t->accent, t->gauge_track);
     {
         char pbuf[8];
         snprintf(pbuf, sizeof(pbuf), "%.0f%%", d->power_pct);
-        font_draw_str(270, 172, pbuf, t->accent, 1);
+        font_draw_str(270, 174, pbuf, t->accent, 1);
     }
 
-    draw_divider(0, 186, SCREEN_W);
+    draw_divider(0, 188, SCREEN_W);
 
     /* --- G-force bar --- */
-    gauge_draw_label(10, 192, "G-FORCE (LONGITUDINAL)", t->text_secondary, 1);
-    draw_g_bar(10, 204, 460, d->accel_g, t);
-    font_draw_str(10,  220, "-2G", RGBA(70,70,70,255), 1);
-    font_draw_str(230, 220, "0G", RGBA(70,70,70,255), 1);
-    font_draw_str(452, 220, "+2G", RGBA(70,70,70,255), 1);
+    gauge_draw_label(10, 194, "G-FORCE", t->text_secondary, 1);
+    draw_g_bar(10, 206, 460, d->accel_g, t);
     {
         char gbuf[12];
-        uint32_t gcol = (d->accel_g > 0.05f)  ? t->accent :
+        uint32_t gcol = (d->accel_g >  0.05f) ? t->accent :
                         (d->accel_g < -0.05f) ? t->warn : t->text_primary;
         snprintf(gbuf, sizeof(gbuf), "%+.2fG", d->accel_g);
-        font_draw_str(192, 220, gbuf, gcol, 1);
+        font_draw_str(220, 218, gbuf, gcol, 1);
     }
 
-    draw_divider(0, 234, SCREEN_W);
+    draw_divider(0, 228, SCREEN_W);
 
-    /* Context strip */
-    gauge_draw_label(10, 240, "SPEED", t->text_secondary, 1);
-    gauge_draw_numeric(54, 240, vs->speed_kmh, "%.0f", "km/h", t->text_primary, 1);
-    gauge_draw_label(160, 240, "RPM", t->text_secondary, 1);
-    gauge_draw_numeric(196, 240, vs->rpm, "%.0f", "", t->text_primary, 1);
-    gauge_draw_label(290, 240, "LOAD", t->text_secondary, 1);
-    gauge_draw_numeric(326, 240, vs->engine_load_pct, "%.0f", "%", t->text_primary, 1);
-    if (d->coasting)
-        font_draw_str(410, 240, "COAST", COLOR_GREEN, 1);
-    else if (d->idle)
-        font_draw_str(410, 240, "IDLE", t->text_secondary, 1);
+    /* --- Bottom: temps + session peaks + reset hint --- */
+    {
+        uint32_t ct_col = (vs->coolant_temp_c > 100.0f) ? t->danger :
+                          (vs->coolant_temp_c >  90.0f) ? t->warn : t->text_primary;
+        uint32_t vt_col = (vs->voltage_v < 11.5f) ? t->danger :
+                          (vs->voltage_v < 12.0f) ? t->warn : t->text_primary;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "CLT:%.0fC", vs->coolant_temp_c);
+        font_draw_str(10, 234, buf, ct_col, 1);
+        snprintf(buf, sizeof(buf), "IAT:%.0fC", vs->iat_c);
+        font_draw_str(110, 234, buf, t->text_primary, 1);
+        snprintf(buf, sizeof(buf), "AMB:%.0fC", vs->ambient_temp_c);
+        font_draw_str(210, 234, buf, t->text_primary, 1);
+        snprintf(buf, sizeof(buf), "VLT:%.1fV", vs->voltage_v);
+        font_draw_str(310, 234, buf, vt_col, 1);
+    }
+    {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "PEAK: %.0fkm/h  %.0frpm",
+                 s_peak_speed, s_peak_rpm);
+        font_draw_str(10, 248, buf, t->text_secondary, 1);
+        font_draw_str(340, 248, "Tri: reset trip", t->text_secondary, 1);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1382,14 +991,361 @@ void dashboard_render_vtec(const VehicleState *vs, const DerivedState *d) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Arcade / pixel-car dashboard                                        */
+/* ------------------------------------------------------------------ */
+
+#define AC_BG     RGBA(  8,   8,  12, 255)
+#define AC_PANEL  RGBA( 14,  14,  22, 255)
+#define AC_BORDER RGBA( 40, 100, 180, 255)
+#define AC_CYAN   RGBA(  0, 220, 255, 255)
+#define AC_DIM    RGBA( 60,  60,  80, 255)
+#define AC_GREEN  RGBA(  0, 200,  80, 255)
+#define AC_ROAD   RGBA( 18,  18,  28, 255)
+#define AC_RDASH  RGBA( 70,  70,  95, 255)
+
+static void ac_box(int x, int y, int w, int h) {
+    renderer_draw_rect(x+1,   y+1,   w-2, h-2, AC_PANEL);
+    renderer_draw_rect(x,     y,     w,   1,   AC_BORDER);
+    renderer_draw_rect(x,     y+h-1, w,   1,   AC_BORDER);
+    renderer_draw_rect(x,     y,     1,   h,   AC_BORDER);
+    renderer_draw_rect(x+w-1, y,     1,   h,   AC_BORDER);
+}
+
+/* Pixel sedan, front faces right, 60x29px.
+   y+29 = wheel bottom; caller places car so y+29 aligns with road top. */
+static void ac_pixel_car(int x, int y, uint32_t tick) {
+    uint32_t body   = RGBA( 55, 110, 200, 255);
+    uint32_t roof   = RGBA( 45,  90, 170, 255);
+    uint32_t win    = RGBA( 10,  25,  50, 255);
+    uint32_t pillar = RGBA( 35,  75, 145, 255);
+    uint32_t whl    = RGBA( 25,  25,  38, 255);
+    uint32_t hub    = RGBA(110, 110, 135, 255);
+    uint32_t light  = RGBA(255, 240, 120, 255);
+    uint32_t tail   = RGBA(210,  40,  40, 255);
+    uint32_t under  = RGBA( 15,  15,  24, 255);
+    uint32_t seam   = RGBA( 35,  80, 155, 255);
+
+    /* cabin */
+    renderer_draw_rect(x+14, y,    32, 11, roof);
+    renderer_draw_rect(x+16, y+1,  12,  8, win);
+    renderer_draw_rect(x+29, y+1,   3,  8, pillar);
+    renderer_draw_rect(x+32, y+1,  12,  8, win);
+    /* body */
+    renderer_draw_rect(x,    y+10, 60, 16, body);
+    renderer_draw_rect(x+4,  y+22, 52,  4, under);
+    renderer_draw_rect(x+13, y+10,  1, 10, seam);
+    renderer_draw_rect(x+39, y+10,  1, 10, seam);
+    /* front face (right side) */
+    renderer_draw_rect(x+56, y+11,  4,  6, pillar);
+    renderer_draw_rect(x+57, y+12,  2,  3, light);
+    /* rear face (left side) */
+    renderer_draw_rect(x,    y+11,  4,  6, pillar);
+    renderer_draw_rect(x+1,  y+12,  2,  3, tail);
+    /* wheel arches */
+    renderer_draw_rect(x+5,  y+21, 12,  5, under);
+    renderer_draw_rect(x+43, y+21, 12,  5, under);
+    /* wheels */
+    renderer_draw_rect(x+6,  y+21, 10,  8, whl);
+    renderer_draw_rect(x+44, y+21, 10,  8, whl);
+    renderer_draw_rect(x+7,  y+22,  8,  2, RGBA(42,42,55,255));
+    renderer_draw_rect(x+45, y+22,  8,  2, RGBA(42,42,55,255));
+    /* spinning hub: 4-frame clockwise dot orbit */
+    static const int8_t hdx[4] = {3, 4, 3, 2};
+    static const int8_t hdy[4] = {2, 3, 4, 3};
+    int fr = (int)(tick / 70) % 4;
+    renderer_draw_rect(x+6  + hdx[fr], y+21 + hdy[fr], 2, 2, hub);
+    renderer_draw_rect(x+44 + hdx[fr], y+21 + hdy[fr], 2, 2, hub);
+}
+
+/* Exhaust puffs drifting left from car rear (rx, ry). */
+static void ac_exhaust(int rx, int ry, uint32_t tick) {
+    for (int i = 0; i < 4; i++) {
+        int d  = (int)((tick / 55 + (uint32_t)(i * 150)) % 20);
+        int px = rx - d * 2 - 2;
+        int py = ry - d / 6;
+        if (px < 0) continue;
+        int v = 120 - d * 5;
+        if (v < 15) continue;
+        int sz = (d < 4) ? 3 : (d < 10) ? 2 : 1;
+        renderer_draw_rect(px, py, sz, sz, RGBA((uint8_t)(v+30),(uint8_t)(v+30),(uint8_t)(v+40),255));
+    }
+}
+
+/* Scrolling road with center dashes. */
+static void ac_road(int x0, int w, int y0, int h, uint32_t tick) {
+    renderer_draw_rect(x0, y0,     w, h, AC_ROAD);
+    renderer_draw_rect(x0, y0,     w, 2, RGBA(55,55,75,255));
+    renderer_draw_rect(x0, y0+h-2, w, 2, RGBA(55,55,75,255));
+    int period   = 32;
+    int dash_len = 18;
+    int off      = (int)(tick / 35) % period;
+    int cy       = y0 + h / 2 - 1;
+    for (int dx = -(period - off); dx < w + period; dx += period) {
+        int sx = x0 + dx, ex = sx + dash_len;
+        if (ex <= x0 || sx >= x0 + w) continue;
+        if (sx < x0)     sx = x0;
+        if (ex > x0 + w) ex = x0 + w;
+        renderer_draw_rect(sx, cy, ex - sx, 2, AC_RDASH);
+    }
+}
+
+void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
+    uint32_t     tick = time_now_ms();
+    const Theme *t    = theme_current();
+
+    renderer_draw_rect(0, 0, SCREEN_W, 272, AC_BG);
+
+    /* ---- TOP BAR  y=0..13 ---- */
+    renderer_draw_rect(0, 0, SCREEN_W, 14, AC_PANEL);
+    renderer_draw_rect(0, 13, SCREEN_W, 1, AC_BORDER);
+    font_draw_str(6, 3, "DRIVE", AC_CYAN, 1);
+    {
+        char buf[12];
+        uint32_t vc = (vs->voltage_v < 11.5f) ? t->danger :
+                      (vs->voltage_v < 12.5f) ? t->warn   : AC_DIM;
+        snprintf(buf, sizeof(buf), "%.1fV", vs->voltage_v);
+        font_draw_str(276, 3, "VOLT", AC_DIM, 1);
+        font_draw_str(308, 3, buf, vc, 1);
+    }
+    {
+        char gbuf[4];
+        uint32_t gc = d->idle ? AC_DIM : AC_CYAN;
+        int cg = (d->gear > 0 && d->gear <= 9) ? d->gear : 0;
+        if (cg == 0) { gbuf[0] = 'N'; gbuf[1] = '\0'; }
+        else         { gbuf[0] = (char)('0' + cg); gbuf[1] = '\0'; }
+        font_draw_str(382, 3, "GEAR", AC_DIM, 1);
+        font_draw_str(414, 3, gbuf, gc, 1);
+    }
+    if (d->coasting)
+        font_draw_str(446, 3, "CST", AC_GREEN, 1);
+    else if (d->idle)
+        font_draw_str(450, 3, "IDL", AC_DIM, 1);
+
+    /* ---- MAIN AREA  y=15..148 ---- */
+    renderer_draw_rect(200, 15, 1, 134, AC_BORDER);
+
+    /* car scene  x=0..199, y=15..148 */
+    renderer_draw_rect(0, 15, 200, 103, AC_BG);
+    ac_road(0, 200, 118, 30, tick);
+    /* car: wheel bottom = y+29 = 118, so y_base = 89 */
+    ac_pixel_car(70, 89, tick);
+    /* exhaust from rear underbody */
+    ac_exhaust(68, 113, tick);
+    /* status text in sky */
+    if (d->instant_l100km > DERIVED_NO_DATA) {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "%.1f L/100", d->instant_l100km);
+        font_draw_str(4, 20, buf, AC_GREEN, 1);
+    }
+
+    /* right panel  x=203..476, y=15..148  (rw=274) */
+    {
+        int rx = 203, rw = 274;
+
+        /* RPM */
+        font_draw_str(rx, 17, "RPM", AC_DIM, 1);
+        {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.0f", vs->rpm);
+            uint32_t rc = (vs->rpm >= 6500.0f) ? t->redline :
+                          (vs->rpm >= 4000.0f) ? t->warn     : AC_CYAN;
+            int tw = font_str_width(buf, 3);
+            font_draw_str(rx + rw - tw - 2, 17, buf, rc, 3);
+        }
+        /* RPM bar  y=46..56 */
+        renderer_draw_rect(rx, 46, rw, 11, RGBA(16,16,24,255));
+        {
+            float pct = vs->rpm / 8000.0f;
+            if (pct > 1.0f) pct = 1.0f;
+            int fill = (int)(pct * rw);
+            int z1   = (int)(4000.0f / 8000.0f * rw);
+            int z2   = (int)(6500.0f / 8000.0f * rw);
+            if (fill > 0) {
+                if (fill <= z1) {
+                    renderer_draw_rect(rx,    46, fill,      11, AC_CYAN);
+                } else if (fill <= z2) {
+                    renderer_draw_rect(rx,    46, z1,        11, AC_CYAN);
+                    renderer_draw_rect(rx+z1, 46, fill-z1,   11, t->warn);
+                } else {
+                    renderer_draw_rect(rx,    46, z1,        11, AC_CYAN);
+                    renderer_draw_rect(rx+z1, 46, z2-z1,     11, t->warn);
+                    renderer_draw_rect(rx+z2, 46, fill-z2,   11, t->redline);
+                }
+            }
+            /* redline tick */
+            renderer_draw_rect(rx + z2, 44, 1, 15, RGBA(255,255,60,200));
+        }
+        font_draw_str(rx,        59, "0",    AC_DIM, 1);
+        font_draw_str(rx+rw-28,  59, "8000", AC_DIM, 1);
+
+        renderer_draw_rect(rx, 69, rw, 1, AC_DIM);
+
+        /* SPEED */
+        font_draw_str(rx, 71, "km/h", AC_DIM, 1);
+        {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.0f", vs->speed_kmh);
+            uint32_t sc = (vs->speed_kmh > 160.0f) ? t->danger :
+                          (vs->speed_kmh > 100.0f) ? t->warn   :
+                          RGBA(220,220,220,255);
+            int tw = font_str_width(buf, 2);
+            font_draw_str(rx + rw - tw - 2, 71, buf, sc, 2);
+        }
+        /* speed bar  y=90..99 */
+        renderer_draw_rect(rx, 90, rw, 10, RGBA(16,16,24,255));
+        {
+            float pct = vs->speed_kmh / 240.0f;
+            if (pct > 1.0f) pct = 1.0f;
+            int fill = (int)(pct * rw);
+            if (fill > 0)
+                renderer_draw_rect(rx, 90, fill, 10, RGBA(200,200,200,255));
+        }
+        font_draw_str(rx,       102, "0",   AC_DIM, 1);
+        font_draw_str(rx+rw-18, 102, "240", AC_DIM, 1);
+
+        renderer_draw_rect(rx, 112, rw, 1, AC_DIM);
+
+        /* THROTTLE + LOAD side-by-side  y=114..148 */
+        {
+            int hw = (rw - 4) / 2;  /* half-width */
+            /* THR */
+            font_draw_str(rx, 114, "THR", AC_DIM, 1);
+            {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%.0f%%", vs->throttle_pct);
+                uint32_t tc = (vs->throttle_pct > 80.0f) ? t->redline :
+                              (vs->throttle_pct > 50.0f) ? t->warn    : AC_GREEN;
+                font_draw_str(rx+26, 114, buf, tc, 1);
+                renderer_draw_rect(rx, 124, hw, 8, RGBA(16,16,24,255));
+                int f = (int)(vs->throttle_pct / 100.0f * hw);
+                if (f > 0) renderer_draw_rect(rx, 124, f, 8, tc);
+            }
+            /* LOAD */
+            int lx = rx + hw + 4;
+            font_draw_str(lx, 114, "LOAD", AC_DIM, 1);
+            {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "%.0f%%", vs->engine_load_pct);
+                uint32_t lc = (vs->engine_load_pct > 80.0f) ? t->redline :
+                              (vs->engine_load_pct > 60.0f) ? t->warn    : AC_GREEN;
+                font_draw_str(lx+32, 114, buf, lc, 1);
+                renderer_draw_rect(lx, 124, hw, 8, RGBA(16,16,24,255));
+                int f = (int)(vs->engine_load_pct / 100.0f * hw);
+                if (f > 0) renderer_draw_rect(lx, 124, f, 8, lc);
+            }
+        }
+    }
+
+    /* ---- DIVIDER ---- */
+    renderer_draw_rect(0, 149, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- ROW 2: COOL | IAT | STFT | LTFT   y=150..178 ---- */
+    {
+        int bh = 29, y2 = 150;
+        ac_box(  0, y2, 120, bh);
+        ac_box(120, y2, 120, bh);
+        ac_box(240, y2, 120, bh);
+        ac_box(360, y2, 120, bh);
+        font_draw_str(  4, y2+3, "COOL", AC_DIM, 1);
+        font_draw_str(124, y2+3, "IAT",  AC_DIM, 1);
+        font_draw_str(244, y2+3, "STFT", AC_DIM, 1);
+        font_draw_str(364, y2+3, "LTFT", AC_DIM, 1);
+        {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%.0fC", vs->coolant_temp_c);
+            uint32_t c = (vs->coolant_temp_c > 100.0f) ? t->danger :
+                         (vs->coolant_temp_c >  90.0f) ? t->warn   : RGBA(220,220,220,255);
+            font_draw_str(4, y2+14, buf, c, 1);
+        }
+        {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%.0fC", vs->iat_c);
+            font_draw_str(124, y2+14, buf, RGBA(220,220,220,255), 1);
+        }
+        {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%+.1f%%", vs->stft_pct);
+            uint32_t c = (vs->stft_pct > 10.f || vs->stft_pct < -10.f) ? t->danger :
+                         (vs->stft_pct >  5.f || vs->stft_pct <  -5.f) ? t->warn   : AC_GREEN;
+            font_draw_str(244, y2+14, buf, c, 1);
+        }
+        {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%+.1f%%", vs->ltft_pct);
+            uint32_t c = (vs->ltft_pct > 10.f || vs->ltft_pct < -10.f) ? t->danger :
+                         (vs->ltft_pct >  5.f || vs->ltft_pct <  -5.f) ? t->warn   : AC_GREEN;
+            font_draw_str(364, y2+14, buf, c, 1);
+        }
+    }
+
+    renderer_draw_rect(0, 179, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- ROW 3: TIMING | AFR | MAF | FUEL   y=180..208 ---- */
+    {
+        int bh = 29, y3 = 180;
+        ac_box(  0, y3, 120, bh);
+        ac_box(120, y3, 120, bh);
+        ac_box(240, y3, 120, bh);
+        ac_box(360, y3, 120, bh);
+        font_draw_str(  4, y3+3, "TIMING", AC_DIM, 1);
+        font_draw_str(124, y3+3, "AFR",    AC_DIM, 1);
+        font_draw_str(244, y3+3, "MAF",    AC_DIM, 1);
+        font_draw_str(364, y3+3, "FUEL",   AC_DIM, 1);
+        {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%+.1f", vs->timing_adv_deg);
+            font_draw_str(4, y3+14, buf, RGBA(220,220,220,255), 1);
+        }
+        {
+            if (d->afr_state < 0) {
+                font_draw_str(124, y3+14, "N/A", AC_DIM, 1);
+            } else {
+                static const char *afrl[] = {"LEAN","STOICH","RICH"};
+                uint32_t c = (d->afr_state == 0) ? t->danger :
+                             (d->afr_state == 1) ? AC_GREEN  : t->warn;
+                font_draw_str(124, y3+14, afrl[d->afr_state], c, 1);
+            }
+        }
+        {
+            char buf[10];
+            snprintf(buf, sizeof(buf), "%.1fg/s", vs->maf_gs);
+            font_draw_str(244, y3+14, buf, RGBA(220,220,220,255), 1);
+        }
+        {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%.0f%%", vs->fuel_level_pct);
+            uint32_t fc = (vs->fuel_level_pct < 15.0f) ? t->danger :
+                          (vs->fuel_level_pct < 30.0f) ? t->warn   : AC_GREEN;
+            font_draw_str(364, y3+14, buf, fc, 1);
+            int bw = 110;
+            renderer_draw_rect(364, y3+23, bw, 4, RGBA(16,16,24,255));
+            int f = (int)(vs->fuel_level_pct / 100.0f * bw);
+            if (f > 0) renderer_draw_rect(364, y3+23, f, 4, fc);
+        }
+    }
+
+    renderer_draw_rect(0, 209, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- ROW 4: G-force  y=210..271 ---- */
+    font_draw_str(6, 212, "G-FORCE", AC_DIM, 1);
+    draw_g_bar(6, 222, 468, d->accel_g, t);
+    font_draw_str(  6, 237, "-2G", AC_DIM, 1);
+    font_draw_str(230, 237, "0G",  AC_DIM, 1);
+    font_draw_str(455, 237, "+2G", AC_DIM, 1);
+    if (d->coasting)
+        font_draw_str(172, 250, ">>  COASTING  <<", AC_CYAN, 1);
+    else if (d->idle)
+        font_draw_str(218, 250, "IDLE", AC_DIM, 1);
+}
+
+/* ------------------------------------------------------------------ */
 /* Status bar (bottom)                                                 */
 /* ------------------------------------------------------------------ */
 
 void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int connected) {
     const Theme *t = theme_current();
-    static const char *mode_names[] = {
-        "DIGITAL", "ANALOG", "DIAG", "PERF", "ENGINE", "TRIP", "SENSORS", "ECONOMY", "JDM",
-        "TOUGE", "VTEC"
+    static const char *mode_names[DASH_MODE_COUNT] = {
+        "DIGITAL", "PERF", "ENGINE", "ECOTRIP", "JDM", "TOUGE", "VTEC", "ARCADE"
     };
 
     renderer_draw_rect(0, 260, SCREEN_W, 12, RGBA(8, 8, 8, 255));
@@ -1412,21 +1368,17 @@ void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int conn
 
 void dashboard_init(void) {}
 
-void dashboard_render(const VehicleState *vs, const DtcList *dtc,
-                      const DerivedState *d, DashMode mode) {
+void dashboard_render(const VehicleState *vs, const DerivedState *d, DashMode mode) {
     static PerfState perf = {0};
     switch (mode) {
-        case DASH_MODE_DIGITAL:     dashboard_render_digital(vs, d);             break;
-        case DASH_MODE_ANALOG:      dashboard_render_analog(vs, d);              break;
-        case DASH_MODE_DIAGNOSTICS: dashboard_render_diagnostics(vs, dtc);       break;
-        case DASH_MODE_PERFORMANCE: dashboard_render_performance(vs, &perf, d);  break;
-        case DASH_MODE_ENGINE:      dashboard_render_engine(vs);                 break;
-        case DASH_MODE_TRIP:        dashboard_render_trip(vs, d);                break;
-        case DASH_MODE_SENSORS:     dashboard_render_sensors(vs, d);             break;
-        case DASH_MODE_ECONOMY:     dashboard_render_economy(vs, d);             break;
-        case DASH_MODE_JDM:         dashboard_render_jdm(vs, d);                 break;
-        case DASH_MODE_TOUGE:       dashboard_render_touge(vs, d);               break;
-        case DASH_MODE_VTEC:        dashboard_render_vtec(vs, d);                break;
+        case DASH_MODE_DIGITAL:     dashboard_render_digital(vs, d);            break;
+        case DASH_MODE_PERFORMANCE: dashboard_render_performance(vs, &perf, d); break;
+        case DASH_MODE_ENGINE:      dashboard_render_engine(vs);                break;
+        case DASH_MODE_ECOTRIP:     dashboard_render_ecotrip(vs, d);            break;
+        case DASH_MODE_JDM:         dashboard_render_jdm(vs, d);                break;
+        case DASH_MODE_TOUGE:       dashboard_render_touge(vs, d);              break;
+        case DASH_MODE_VTEC:        dashboard_render_vtec(vs, d);               break;
+        case DASH_MODE_ARCADE:      dashboard_render_arcade(vs, d);             break;
         default: break;
     }
 }

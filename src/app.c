@@ -10,7 +10,6 @@
 #include "obd/elm327.h"
 #include "obd/pid.h"
 #include "obd/parser.h"
-#include "obd/diagnostics.h"
 #include "telemetry/model.h"
 #include "telemetry/derived.h"
 #include "telemetry/filter.h"
@@ -36,7 +35,6 @@ static Settings      g_settings;
 static TcpSocket     g_sock;
 static ReconnectState g_reconnect;
 static VehicleState  g_vehicle;
-static DtcList       g_dtc;
 static PidScheduler  g_sched;
 static MovingAvg     g_filters[PID_COUNT];
 static DerivedState  g_derived;
@@ -47,6 +45,9 @@ static int           g_demo_mode     = 0;   /* 1 = show fake data              *
 static int           g_main_menu_sel = 0;   /* 0=connect 1=demo 2=settings     */
 static int           g_help_visible  = 0;   /* help overlay toggle             */
 static char          g_obd_status[128] = {0};
+static volatile int  g_obd_reconnecting = 0; /* 1 while quick reconnect in progress */
+
+#define QUICK_RECONNECT_ATTEMPTS 3
 
 /* ------------------------------------------------------------------ */
 
@@ -77,7 +78,6 @@ static void leave_setup(SetupResult result) {
         g_dash_mode = (DashMode)theme_current()->default_mode;
         pid_scheduler_init(&g_sched, g_settings.poll_interval_ms);
         reconnect_reset(&g_reconnect);
-        memset(&g_dtc, 0, sizeof(g_dtc));
         g_demo_mode = 0;
         g_state     = APP_STATE_MAIN_MENU;
         LOG_I("Setup done, returning to main menu");
@@ -102,7 +102,6 @@ static void return_to_main_menu(void) {
     socket_close(&g_sock);
     wifi_shutdown();
     telemetry_init(&g_vehicle);
-    memset(&g_dtc, 0, sizeof(g_dtc));
     for (int i = 0; i < PID_COUNT; i++)
         filter_init(&g_filters[i]);
     pid_scheduler_init(&g_sched, g_settings.poll_interval_ms);
@@ -125,8 +124,6 @@ static void poll_obd(void); /* defined below */
 
 static int obd_thread_func(SceSize args, void *argp) {
     (void)args; (void)argp;
-    uint32_t dtc_next_try_ms = 0;
-
     while (g_running) {
         if (g_state != APP_STATE_RUNNING || g_demo_mode) {
             sceKernelDelayThread(5000); /* 5 ms -- idle when not in RUNNING */
@@ -137,17 +134,32 @@ static int obd_thread_func(SceSize args, void *argp) {
         poll_obd();
 
         if (!socket_is_connected(&g_sock)) {
-            LOG_W("OBD connection lost, will re-probe");
-            reconnect_reset(&g_reconnect);
-            g_obd_status[0] = '\0';
-            g_state = APP_STATE_OBD_CONNECTING;
+            LOG_W("OBD connection lost, attempting quick reconnect");
+            g_obd_reconnecting = 1;
+            int quick_ok = 0;
+            for (int qa = 0; qa < QUICK_RECONNECT_ATTEMPTS && g_state == APP_STATE_RUNNING; qa++) {
+                socket_close(&g_sock);
+                socket_init(&g_sock, g_settings.obd_ip, g_settings.obd_port);
+                LOG_I("Quick reconnect attempt %d/%d to %s:%d",
+                      qa + 1, QUICK_RECONNECT_ATTEMPTS,
+                      g_settings.obd_ip, g_settings.obd_port);
+                if (socket_connect(&g_sock) == 0 && elm327_init_quick(&g_sock) == 0) {
+                    quick_ok = 1;
+                    LOG_I("Quick reconnect succeeded");
+                    break;
+                }
+                if (qa + 1 < QUICK_RECONNECT_ATTEMPTS && g_state == APP_STATE_RUNNING)
+                    time_sleep_ms(1000);
+            }
+            g_obd_reconnecting = 0;
+            if (!quick_ok && g_state == APP_STATE_RUNNING) {
+                LOG_W("Quick reconnect failed, falling back to full reconnect");
+                reconnect_reset(&g_reconnect);
+                g_obd_status[0] = '\0';
+                g_state = APP_STATE_OBD_CONNECTING;
+            }
             g_obd_poll_busy = 0;
             continue;
-        }
-
-        if (!g_dtc.read_ok && time_now_ms() >= dtc_next_try_ms) {
-            if (dtc_read(&g_sock, &g_dtc) != 0)
-                dtc_next_try_ms = time_now_ms() + 5000;
         }
 
         g_obd_poll_busy = 0;
@@ -173,7 +185,6 @@ int app_init(void) {
         filter_init(&g_filters[i]);
 
     telemetry_init(&g_vehicle);
-    memset(&g_dtc, 0, sizeof(g_dtc));
     pid_scheduler_init(&g_sched, g_settings.poll_interval_ms);
 
     if (renderer_init() != 0) {
@@ -270,8 +281,8 @@ static void handle_input(void) {
         g_dash_mode = (DashMode)theme_current()->default_mode;
     }
 
-    /* Triangle on TRIP/ECONOMY: reset trip */
-    if ((g_dash_mode == DASH_MODE_TRIP || g_dash_mode == DASH_MODE_ECONOMY) &&
+    /* Triangle on ECOTRIP: reset trip */
+    if (g_dash_mode == DASH_MODE_ECOTRIP &&
         input_pressed(&g_input, BTN_TRIANGLE)) {
         dashboard_trip_reset_session();
         derived_reset_trip(&g_derived);
@@ -349,14 +360,6 @@ static uint32_t get_mode_pid_mask(DashMode mode) {
         mask = M(RPM)|M(SPEED)|M(COOLANT_TEMP)|M(THROTTLE)|M(IAT)|
                M(ENGINE_LOAD)|M(VOLTAGE)|M(OIL_TEMP)|M(FUEL_LEVEL);
         break;
-    case DASH_MODE_ANALOG:
-        mask = M(RPM)|M(SPEED)|M(COOLANT_TEMP)|M(ENGINE_LOAD)|
-               M(VOLTAGE)|M(OIL_TEMP);
-        break;
-    case DASH_MODE_DIAGNOSTICS:
-        mask = M(RPM)|M(SPEED)|M(MIL_TIME)|M(CLR_TIME)|
-               M(MIL_DIST)|M(CLR_DIST);
-        break;
     case DASH_MODE_PERFORMANCE:
         mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD);
         break;
@@ -365,19 +368,11 @@ static uint32_t get_mode_pid_mask(DashMode mode) {
                M(IAT)|M(COOLANT_TEMP)|M(OIL_TEMP)|M(VOLTAGE)|
                M(MAP)|M(MAF)|M(BARO)|M(FUEL_LEVEL)|M(AMBIENT_TEMP)|M(RUNTIME);
         break;
-    case DASH_MODE_TRIP:
+    case DASH_MODE_ECOTRIP:
         mask = M(RPM)|M(SPEED)|M(RUNTIME)|M(FUEL_LEVEL)|M(FUEL_RATE)|
                M(AMBIENT_TEMP)|M(IAT)|M(COOLANT_TEMP)|M(OIL_TEMP)|
-               M(VOLTAGE)|M(ETHANOL);
-        break;
-    case DASH_MODE_SENSORS:
-        mask = M(MAP)|M(MAF)|M(BARO)|M(FUEL_RATE)|M(O2_B1S1)|M(O2_B1S2)|
-               M(OIL_TEMP)|M(ETHANOL)|M(ACCEL_POS)|M(REL_THROTTLE)|
-               M(MIL_TIME)|M(CLR_TIME)|M(MIL_DIST)|M(CLR_DIST);
-        break;
-    case DASH_MODE_ECONOMY:
-        mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|
-               M(FUEL_RATE)|M(O2_B1S1)|M(FUEL_LEVEL);
+               M(VOLTAGE)|M(ETHANOL)|M(THROTTLE)|M(ENGINE_LOAD)|
+               M(O2_B1S1)|M(MAF);
         break;
     case DASH_MODE_JDM:
         mask = M(RPM)|M(SPEED)|M(COOLANT_TEMP)|M(VOLTAGE)|M(THROTTLE);
@@ -390,6 +385,11 @@ static uint32_t get_mode_pid_mask(DashMode mode) {
         mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|M(IAT)|
                M(COOLANT_TEMP)|M(STFT)|M(LTFT)|M(TIMING_ADV)|M(O2_B1S1)|
                M(FUEL_RATE)|M(MAF);
+        break;
+    case DASH_MODE_ARCADE:
+        mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|M(IAT)|
+               M(COOLANT_TEMP)|M(STFT)|M(LTFT)|M(TIMING_ADV)|M(MAF)|
+               M(O2_B1S1)|M(FUEL_RATE)|M(FUEL_LEVEL)|M(VOLTAGE);
         break;
     default:
         return 0; /* 0 = poll all */
@@ -420,6 +420,11 @@ static void poll_obd(void) {
 
     ParseResult pr = obd_parse_response(pid, resp);
     if (pr.valid) {
+        /* Catch non-finite decoded values before they corrupt VehicleState */
+        if (pr.value != pr.value || pr.value > 1.0e9f || pr.value < -1.0e9f) {
+            LOG_W("PID[%d] %s non-finite decode: resp='%s'", (int)pid,
+                  PID_TABLE[pid].name, resp);
+        } else {
         int first_hit = (g_vehicle.supported[pid] != 1);
         g_vehicle.supported[pid] = 1;
         g_sched.fail_count[pid]  = 0;
@@ -431,6 +436,7 @@ static void poll_obd(void) {
         else
             LOG_D("PID[%d] %s = %.2f %s", (int)pid,
                   PID_TABLE[pid].name, smoothed, PID_TABLE[pid].unit);
+        }
     } else if (g_vehicle.supported[pid] != 1) {
         /* SEARCHING.../STOPPED are transient bus-detection states; don't
            penalise the PID.  Only NO DATA or '?' mean the PID is actually
@@ -826,14 +832,57 @@ void app_run(void) {
                     s_last_mask = new_mask;
                 }
                 g_sched.active_mask = new_mask;
-                /* OBD polling, socket-dead detection, and DTC read run in obd_thread_func */
+                /* OBD polling and socket-dead detection run in obd_thread_func */
             }
 
             derived_compute(&g_derived, &g_vehicle, dt_ms);
 
+            /* Derived NaN guard */
+            if (g_derived.instant_l100km != g_derived.instant_l100km ||
+                g_derived.accel_g        != g_derived.accel_g        ||
+                g_derived.power_pct      != g_derived.power_pct) {
+                LOG_W("derived NaN: l100=%.2f accel_g=%.2f pwr=%.2f  "
+                      "rpm=%.0f spd=%.1f maf=%.2f lh=%.2f",
+                      g_derived.instant_l100km, g_derived.accel_g, g_derived.power_pct,
+                      g_vehicle.rpm, g_vehicle.speed_kmh,
+                      g_vehicle.maf_gs, g_vehicle.fuel_rate_lh);
+            }
+
+            /* Gear change */
+            {
+                static int s_last_gear = -99;
+                if (g_derived.gear != s_last_gear) {
+                    LOG_I("gear %d -> %d  (rpm=%.0f spd=%.1f)",
+                          s_last_gear, g_derived.gear, g_vehicle.rpm, g_vehicle.speed_kmh);
+                    s_last_gear = g_derived.gear;
+                }
+            }
+
+            /* 10s telemetry snapshot */
+            {
+                static uint32_t s_snap_ms = 0;
+                if (!g_demo_mode && now_ms - s_snap_ms >= 10000) {
+                    s_snap_ms = now_ms;
+                    LOG_I("SNAP rpm=%.0f spd=%.1f gear=%d clt=%.0f iat=%.0f "
+                          "thr=%.1f load=%.1f vlt=%.2f stft=%.1f ltft=%.1f",
+                          g_vehicle.rpm, g_vehicle.speed_kmh, g_derived.gear,
+                          g_vehicle.coolant_temp_c, g_vehicle.iat_c,
+                          g_vehicle.throttle_pct, g_vehicle.engine_load_pct,
+                          g_vehicle.voltage_v, g_vehicle.stft_pct, g_vehicle.ltft_pct);
+                    LOG_I("SNAP adv=%.1f maf=%.2f map=%.0f baro=%.0f "
+                          "l100=%.1f trip_km=%.2f trip_l=%.2f "
+                          "pwr=%.0f accel_g=%.2f afr=%d",
+                          g_vehicle.timing_adv_deg, g_vehicle.maf_gs,
+                          g_vehicle.map_kpa, g_vehicle.baro_kpa,
+                          g_derived.instant_l100km, g_derived.trip_dist_km,
+                          g_derived.trip_fuel_l, g_derived.power_pct,
+                          g_derived.accel_g, g_derived.afr_state);
+                }
+            }
+
             renderer_begin_frame();
             renderer_clear(theme_current()->bg);
-            dashboard_render(&g_vehicle, &g_dtc, &g_derived, g_dash_mode);
+            dashboard_render(&g_vehicle, &g_derived, g_dash_mode);
             dashboard_render_status_bar(&g_vehicle, g_dash_mode,
                                         g_demo_mode ? 2
                                                     : socket_is_connected(&g_sock));
@@ -844,6 +893,10 @@ void app_run(void) {
                                        RGBA(255, 0, 0, 35));
             }
             if (g_help_visible) draw_help_overlay();
+            if (g_obd_reconnecting) {
+                renderer_draw_rect(166, 4, 148, 16, RGBA(0, 0, 0, 200));
+                font_draw_str(170, 6, "RECONNECTING...", RGBA(255, 200, 0, 255), 1);
+            }
             renderer_end_frame();
             break;
         }

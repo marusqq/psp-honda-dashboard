@@ -25,7 +25,7 @@ const PidDef PID_TABLE[PID_COUNT] = {
     [PID_THROTTLE]     = {"0111", "Throttle",          "%",   decode_pct,        0,     100, 1},
     [PID_IAT]          = {"010F", "Intake Air Temp",   "C",   decode_temp,      -40,   215, 3},
     [PID_ENGINE_LOAD]  = {"0104", "Engine Load",       "%",   decode_pct,        0,     100, 2},
-    [PID_VOLTAGE]      = {"0142", "Voltage",           "V",   decode_volt,       0,      20, 3},
+    [PID_VOLTAGE]      = {"ATRV", "Voltage",           "V",   decode_volt,       0,      20, 3},
     /* ECU internals */
     [PID_STFT]         = {"0106", "ST Fuel Trim",      "%",   decode_fuel_trim,-100,   100, 1},
     [PID_LTFT]         = {"0107", "LT Fuel Trim",      "%",   decode_fuel_trim,-100,   100, 3},

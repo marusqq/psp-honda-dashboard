@@ -41,6 +41,27 @@ ParseResult obd_parse_response(PidIndex pid_idx, const char *resp) {
     if (strstr(resp, "NO DATA") || strstr(resp, "ERROR") || resp[0] == '?')
         return result;
 
+    /* AT commands (e.g. ATRV) return human-readable text, not OBD2 hex frames.
+       Parse the first float value from the response string. */
+    if (PID_TABLE[pid_idx].cmd[0] == 'A' && PID_TABLE[pid_idx].cmd[1] == 'T') {
+        float val = 0.0f;
+        const char *p = resp;
+        /* skip non-numeric prefix */
+        while (*p && *p != '-' && !(*p >= '0' && *p <= '9')) p++;
+        if (*p) {
+            float sign = 1.0f;
+            if (*p == '-') { sign = -1.0f; p++; }
+            while (*p >= '0' && *p <= '9') { val = val * 10.0f + (*p++ - '0'); }
+            if (*p == '.') {
+                float f = 0.1f; p++;
+                while (*p >= '0' && *p <= '9') { val += (*p++ - '0') * f; f *= 0.1f; }
+            }
+            result.value = val * sign;
+            result.valid = 1;
+        }
+        return result;
+    }
+
     uint8_t bytes[8];
     int n = obd_parse_bytes(resp, bytes, 8);
 

@@ -39,6 +39,7 @@ int elm327_send_cmd(TcpSocket *sock, const char *cmd, char *resp, int resp_max, 
     if (socket_send(sock, buf, cmd_len + 1) <= 0)
         return -1;
 
+    resp[0] = '\0';
     int total = 0;
     uint32_t start = time_now_ms();
 
@@ -85,7 +86,7 @@ static void elm327_wait_bus_ready(TcpSocket *sock) {
     uint32_t start    = time_now_ms();
     uint32_t deadline = start + 15000;
     int attempt = 0;
-    LOG_I("Waiting for OBD bus ready (max 10s)...");
+    LOG_I("Waiting for OBD bus ready (max 15s)...");
     while (time_now_ms() < deadline) {
         char resp[ELM327_RESP_MAX];
         elm327_send_cmd(sock, "0100", resp, sizeof(resp), 2000);
@@ -122,6 +123,24 @@ int elm327_init(TcpSocket *sock) {
     elm327_wait_bus_ready(sock);
 
     LOG_I("ELM327 init done");
+    return 0;
+}
+
+/* Quick reconnect init: TCP is already fresh-connected, adapter retained its
+   protocol (ATSP3).  Skip ATZ and bus_ready -- the ISO 9141-2 bus is still
+   alive on the car side.  Only need to flush stale bytes and re-arm settings. */
+int elm327_init_quick(TcpSocket *sock) {
+    LOG_I("ELM327 quick init (skip ATZ/bus_ready)");
+    char flush[64];
+    socket_send(sock, "\r", 1);
+    time_sleep_ms(60);
+    while (socket_recv(sock, flush, sizeof(flush) - 1, 20) > 0) {}
+    send_at(sock, "ATE0");
+    send_at(sock, "ATS0");
+    send_at(sock, "ATH0");
+    send_at(sock, "ATAT2");
+    send_at(sock, "ATSP3");
+    LOG_I("ELM327 quick init done");
     return 0;
 }
 

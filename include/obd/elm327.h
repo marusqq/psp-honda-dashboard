@@ -6,6 +6,7 @@
 #define ELM327_PROMPT   '>'
 
 int elm327_init(TcpSocket *sock);
+int elm327_init_quick(TcpSocket *sock); /* reconnect: skip ATZ and bus_ready */
 int elm327_send_cmd(TcpSocket *sock, const char *cmd, char *resp, int resp_max, int timeout_ms);
 int elm327_query_pid(TcpSocket *sock, const char *pid_cmd, char *resp, int resp_max);
 
