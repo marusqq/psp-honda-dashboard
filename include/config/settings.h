@@ -5,7 +5,7 @@
 
 #define SETTINGS_PATH    "ms0:/PSP/GAME/PSP-OBD2/settings.bin"
 #define SETTINGS_MAGIC   0x4F424432u
-#define SETTINGS_VERSION 4
+#define SETTINGS_VERSION 5
 
 typedef struct {
     uint32_t magic;

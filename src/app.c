@@ -20,6 +20,7 @@
 #include "input/controls.h"
 #include "config/settings.h"
 #include "utils/log.h"
+#include "utils/stats_log.h"
 #include "utils/time.h"
 #include "utils/memory.h"
 #include "utils/font.h"
@@ -274,8 +275,8 @@ static void handle_input(void) {
     if (input_pressed(&g_input, BTN_R))
         g_dash_mode = (DashMode)((g_dash_mode + 1) % DASH_MODE_COUNT);
 
-    /* Cross: cycle theme */
-    if (input_pressed(&g_input, BTN_CROSS)) {
+    /* Cross: cycle theme (not on DRAG where X = reset) */
+    if (g_dash_mode != DASH_MODE_DRAG && input_pressed(&g_input, BTN_CROSS)) {
         ThemeID next = (ThemeID)((theme_get() + 1) % THEME_COUNT);
         theme_set(next);
         g_dash_mode = (DashMode)theme_current()->default_mode;
@@ -287,6 +288,11 @@ static void handle_input(void) {
         dashboard_trip_reset_session();
         derived_reset_trip(&g_derived);
     }
+
+    /* Cross on DRAG: reset run */
+    if (g_dash_mode == DASH_MODE_DRAG &&
+        input_pressed(&g_input, BTN_CROSS))
+        dashboard_drag_reset();
 }
 
 /* ------------------------------------------------------------------ */
@@ -390,6 +396,10 @@ static uint32_t get_mode_pid_mask(DashMode mode) {
         mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|M(IAT)|
                M(COOLANT_TEMP)|M(STFT)|M(LTFT)|M(TIMING_ADV)|M(MAF)|
                M(O2_B1S1)|M(FUEL_RATE)|M(FUEL_LEVEL)|M(VOLTAGE);
+        break;
+    case DASH_MODE_DRAG:
+        mask = M(RPM)|M(SPEED)|M(THROTTLE)|M(ENGINE_LOAD)|
+               M(COOLANT_TEMP)|M(VOLTAGE);
         break;
     default:
         return 0; /* 0 = poll all */
@@ -777,6 +787,7 @@ void app_run(void) {
                         if (elm327_init(&g_sock) == 0) {
                             reconnect_on_success(&g_reconnect);
                             g_state = APP_STATE_RUNNING;
+                            stats_log_open();
                             LOG_I("OBD ready at %s:%d", found_ip, found_port);
                         } else {
                             LOG_E("ELM327 init failed after probe connect");
@@ -802,6 +813,7 @@ void app_run(void) {
                             reconnect_on_success(&g_reconnect);
                             g_obd_status[0] = '\0';
                             g_state = APP_STATE_RUNNING;
+                            stats_log_open();
                             LOG_I("OBD ready");
                         } else {
                             LOG_E("ELM327 init failed after reconnect");
@@ -855,6 +867,15 @@ void app_run(void) {
                     LOG_I("gear %d -> %d  (rpm=%.0f spd=%.1f)",
                           s_last_gear, g_derived.gear, g_vehicle.rpm, g_vehicle.speed_kmh);
                     s_last_gear = g_derived.gear;
+                }
+            }
+
+            /* 1s CSV stats sample */
+            {
+                static uint32_t s_stats_ms = 0;
+                if (!g_demo_mode && now_ms - s_stats_ms >= 1000) {
+                    s_stats_ms = now_ms;
+                    stats_log_sample(&g_vehicle, &g_derived);
                 }
             }
 
@@ -922,6 +943,7 @@ void app_shutdown(void) {
     g_running = 0;
     if (g_obd_thread_id >= 0)
         sceKernelTerminateDeleteThread(g_obd_thread_id);
+    stats_log_close();
     socket_close(&g_sock);
     wifi_shutdown();
     renderer_shutdown();

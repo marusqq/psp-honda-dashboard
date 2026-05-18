@@ -1012,18 +1012,23 @@ static void ac_box(int x, int y, int w, int h) {
 }
 
 /* Pixel sedan, front faces right, 60x29px.
+   state: 0=normal blue, 1=high-rpm green, 2=overtemp red.
    y+29 = wheel bottom; caller places car so y+29 aligns with road top. */
-static void ac_pixel_car(int x, int y, uint32_t tick) {
-    uint32_t body   = RGBA( 55, 110, 200, 255);
-    uint32_t roof   = RGBA( 45,  90, 170, 255);
+static void ac_pixel_car(int x, int y, uint32_t tick, int state) {
+    uint32_t body   = (state==1) ? RGBA( 30,140, 60,255) :
+                      (state==2) ? RGBA(170, 40, 40,255) : RGBA( 55,110,200,255);
+    uint32_t roof   = (state==1) ? RGBA( 20,110, 45,255) :
+                      (state==2) ? RGBA(140, 30, 30,255) : RGBA( 45, 90,170,255);
+    uint32_t pillar = (state==1) ? RGBA( 15, 90, 35,255) :
+                      (state==2) ? RGBA(120, 25, 25,255) : RGBA( 35, 75,145,255);
+    uint32_t seam   = (state==1) ? RGBA( 10, 70, 25,255) :
+                      (state==2) ? RGBA(100, 15, 15,255) : RGBA( 35, 80,155,255);
     uint32_t win    = RGBA( 10,  25,  50, 255);
-    uint32_t pillar = RGBA( 35,  75, 145, 255);
     uint32_t whl    = RGBA( 25,  25,  38, 255);
     uint32_t hub    = RGBA(110, 110, 135, 255);
     uint32_t light  = RGBA(255, 240, 120, 255);
     uint32_t tail   = RGBA(210,  40,  40, 255);
     uint32_t under  = RGBA( 15,  15,  24, 255);
-    uint32_t seam   = RGBA( 35,  80, 155, 255);
 
     /* cabin */
     renderer_draw_rect(x+14, y,    32, 11, roof);
@@ -1127,15 +1132,23 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
     /* car scene  x=0..199, y=15..148 */
     renderer_draw_rect(0, 15, 200, 103, AC_BG);
     ac_road(0, 200, 118, 30, tick);
-    /* car: wheel bottom = y+29 = 118, so y_base = 89 */
-    ac_pixel_car(70, 89, tick);
-    /* exhaust from rear underbody */
+    /* car color: green if RPM >= 5500, red if overtemp, else blue */
+    {
+        int car_state = (vs->coolant_temp_c > 100.0f) ? 2 :
+                        (vs->rpm >= 5500.0f)          ? 1 : 0;
+        ac_pixel_car(70, 89, tick, car_state);
+    }
     ac_exhaust(68, 113, tick);
-    /* status text in sky */
+    /* sky info: L/100 + trip distance */
     if (d->instant_l100km > DERIVED_NO_DATA) {
-        char buf[12];
+        char buf[14];
         snprintf(buf, sizeof(buf), "%.1f L/100", d->instant_l100km);
         font_draw_str(4, 20, buf, AC_GREEN, 1);
+    }
+    if (d->trip_dist_km > 0.0f) {
+        char buf[10];
+        snprintf(buf, sizeof(buf), "%.1fkm", d->trip_dist_km);
+        font_draw_str(4, 30, buf, AC_DIM, 1);
     }
 
     /* right panel  x=203..476, y=15..148  (rw=274) */
@@ -1152,8 +1165,28 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
             int tw = font_str_width(buf, 3);
             font_draw_str(rx + rw - tw - 2, 17, buf, rc, 3);
         }
-        /* RPM bar  y=46..56 */
-        renderer_draw_rect(rx, 46, rw, 11, RGBA(16,16,24,255));
+        /* shift lights  y=42..47: 5 dots, thresholds 4000/5000/5800/6300/7000 */
+        {
+            static const float sl_thr[5] = {4000,5000,5800,6300,7000};
+            static const uint32_t sl_on[5] = {
+                RGBA(  0,200, 80,255), RGBA(  0,200, 80,255), RGBA(  0,220,255,255),
+                RGBA(255,200,  0,255), RGBA(255, 50, 50,255)
+            };
+            int all5 = (vs->rpm >= sl_thr[4]);
+            int flash = all5 && ((tick / 80) % 2);
+            int lw = 40, gap = 10;
+            int ltotal = 5*lw + 4*gap;
+            int lx0 = rx + (rw - ltotal) / 2;
+            for (int i = 0; i < 5; i++) {
+                int lx = lx0 + i*(lw+gap);
+                int lit = (vs->rpm >= sl_thr[i]);
+                uint32_t c = (lit && !flash) ? sl_on[i] : RGBA(16,16,24,255);
+                renderer_draw_rect(lx, 42, lw, 6, c);
+            }
+        }
+
+        /* RPM bar  y=50..60 */
+        renderer_draw_rect(rx, 50, rw, 11, RGBA(16,16,24,255));
         {
             float pct = vs->rpm / 8000.0f;
             if (pct > 1.0f) pct = 1.0f;
@@ -1162,26 +1195,26 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
             int z2   = (int)(6500.0f / 8000.0f * rw);
             if (fill > 0) {
                 if (fill <= z1) {
-                    renderer_draw_rect(rx,    46, fill,      11, AC_CYAN);
+                    renderer_draw_rect(rx,    50, fill,      11, AC_CYAN);
                 } else if (fill <= z2) {
-                    renderer_draw_rect(rx,    46, z1,        11, AC_CYAN);
-                    renderer_draw_rect(rx+z1, 46, fill-z1,   11, t->warn);
+                    renderer_draw_rect(rx,    50, z1,        11, AC_CYAN);
+                    renderer_draw_rect(rx+z1, 50, fill-z1,   11, t->warn);
                 } else {
-                    renderer_draw_rect(rx,    46, z1,        11, AC_CYAN);
-                    renderer_draw_rect(rx+z1, 46, z2-z1,     11, t->warn);
-                    renderer_draw_rect(rx+z2, 46, fill-z2,   11, t->redline);
+                    renderer_draw_rect(rx,    50, z1,        11, AC_CYAN);
+                    renderer_draw_rect(rx+z1, 50, z2-z1,     11, t->warn);
+                    renderer_draw_rect(rx+z2, 50, fill-z2,   11, t->redline);
                 }
             }
             /* redline tick */
-            renderer_draw_rect(rx + z2, 44, 1, 15, RGBA(255,255,60,200));
+            renderer_draw_rect(rx + z2, 48, 1, 15, RGBA(255,255,60,200));
         }
-        font_draw_str(rx,        59, "0",    AC_DIM, 1);
-        font_draw_str(rx+rw-28,  59, "8000", AC_DIM, 1);
+        font_draw_str(rx,        63, "0",    AC_DIM, 1);
+        font_draw_str(rx+rw-28,  63, "8000", AC_DIM, 1);
 
-        renderer_draw_rect(rx, 69, rw, 1, AC_DIM);
+        renderer_draw_rect(rx, 73, rw, 1, AC_DIM);
 
         /* SPEED */
-        font_draw_str(rx, 71, "km/h", AC_DIM, 1);
+        font_draw_str(rx, 75, "km/h", AC_DIM, 1);
         {
             char buf[8];
             snprintf(buf, sizeof(buf), "%.0f", vs->speed_kmh);
@@ -1189,49 +1222,49 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
                           (vs->speed_kmh > 100.0f) ? t->warn   :
                           RGBA(220,220,220,255);
             int tw = font_str_width(buf, 2);
-            font_draw_str(rx + rw - tw - 2, 71, buf, sc, 2);
+            font_draw_str(rx + rw - tw - 2, 75, buf, sc, 2);
         }
-        /* speed bar  y=90..99 */
-        renderer_draw_rect(rx, 90, rw, 10, RGBA(16,16,24,255));
+        /* speed bar  y=94..103 */
+        renderer_draw_rect(rx, 94, rw, 10, RGBA(16,16,24,255));
         {
             float pct = vs->speed_kmh / 240.0f;
             if (pct > 1.0f) pct = 1.0f;
             int fill = (int)(pct * rw);
             if (fill > 0)
-                renderer_draw_rect(rx, 90, fill, 10, RGBA(200,200,200,255));
+                renderer_draw_rect(rx, 94, fill, 10, RGBA(200,200,200,255));
         }
-        font_draw_str(rx,       102, "0",   AC_DIM, 1);
-        font_draw_str(rx+rw-18, 102, "240", AC_DIM, 1);
+        font_draw_str(rx,       106, "0",   AC_DIM, 1);
+        font_draw_str(rx+rw-18, 106, "240", AC_DIM, 1);
 
-        renderer_draw_rect(rx, 112, rw, 1, AC_DIM);
+        renderer_draw_rect(rx, 116, rw, 1, AC_DIM);
 
-        /* THROTTLE + LOAD side-by-side  y=114..148 */
+        /* THROTTLE + LOAD side-by-side  y=118..148 */
         {
-            int hw = (rw - 4) / 2;  /* half-width */
+            int hw = (rw - 4) / 2;
             /* THR */
-            font_draw_str(rx, 114, "THR", AC_DIM, 1);
+            font_draw_str(rx, 118, "THR", AC_DIM, 1);
             {
                 char buf[8];
                 snprintf(buf, sizeof(buf), "%.0f%%", vs->throttle_pct);
                 uint32_t tc = (vs->throttle_pct > 80.0f) ? t->redline :
                               (vs->throttle_pct > 50.0f) ? t->warn    : AC_GREEN;
-                font_draw_str(rx+26, 114, buf, tc, 1);
-                renderer_draw_rect(rx, 124, hw, 8, RGBA(16,16,24,255));
+                font_draw_str(rx+26, 118, buf, tc, 1);
+                renderer_draw_rect(rx, 128, hw, 8, RGBA(16,16,24,255));
                 int f = (int)(vs->throttle_pct / 100.0f * hw);
-                if (f > 0) renderer_draw_rect(rx, 124, f, 8, tc);
+                if (f > 0) renderer_draw_rect(rx, 128, f, 8, tc);
             }
             /* LOAD */
             int lx = rx + hw + 4;
-            font_draw_str(lx, 114, "LOAD", AC_DIM, 1);
+            font_draw_str(lx, 118, "LOAD", AC_DIM, 1);
             {
                 char buf[8];
                 snprintf(buf, sizeof(buf), "%.0f%%", vs->engine_load_pct);
                 uint32_t lc = (vs->engine_load_pct > 80.0f) ? t->redline :
                               (vs->engine_load_pct > 60.0f) ? t->warn    : AC_GREEN;
-                font_draw_str(lx+32, 114, buf, lc, 1);
-                renderer_draw_rect(lx, 124, hw, 8, RGBA(16,16,24,255));
+                font_draw_str(lx+32, 118, buf, lc, 1);
+                renderer_draw_rect(lx, 128, hw, 8, RGBA(16,16,24,255));
                 int f = (int)(vs->engine_load_pct / 100.0f * hw);
-                if (f > 0) renderer_draw_rect(lx, 124, f, 8, lc);
+                if (f > 0) renderer_draw_rect(lx, 128, f, 8, lc);
             }
         }
     }
@@ -1339,13 +1372,228 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Drag dashboard                                                      */
+/* ------------------------------------------------------------------ */
+
+static PerfState g_drag_perf = {0};
+void dashboard_drag_reset(void) { g_drag_perf = (PerfState){0}; }
+
+void dashboard_render_drag(const VehicleState *vs, const DerivedState *d) {
+    PerfState *perf = &g_drag_perf;
+    uint32_t     tick = time_now_ms();
+    const Theme *t    = theme_current();
+
+    renderer_draw_rect(0, 0, SCREEN_W, 272, AC_BG);
+
+    /* ---- RPM color strip  y=0..10 ---- */
+    {
+        renderer_draw_rect(0, 0, SCREEN_W, 11, RGBA(16,16,24,255));
+        float pct = vs->rpm / 8000.0f;
+        if (pct > 1.0f) pct = 1.0f;
+        int fill = (int)(pct * SCREEN_W);
+        int z1   = (int)(4000.0f / 8000.0f * SCREEN_W);
+        int z2   = (int)(6500.0f / 8000.0f * SCREEN_W);
+        if (fill > 0) {
+            if (fill <= z1) {
+                renderer_draw_rect(0,  0, fill,    11, AC_CYAN);
+            } else if (fill <= z2) {
+                renderer_draw_rect(0,  0, z1,      11, AC_CYAN);
+                renderer_draw_rect(z1, 0, fill-z1, 11, t->warn);
+            } else {
+                renderer_draw_rect(0,  0, z1,      11, AC_CYAN);
+                renderer_draw_rect(z1, 0, z2-z1,   11, t->warn);
+                renderer_draw_rect(z2, 0, fill-z2, 11, t->redline);
+            }
+        }
+        /* shift lights: 5 dots at right end */
+        static const float sl_thr[5] = {4000,5000,5800,6300,7000};
+        static const uint32_t sl_on[5] = {
+            RGBA(0,200,80,255), RGBA(0,200,80,255), RGBA(0,220,255,255),
+            RGBA(255,200,0,255), RGBA(255,50,50,255)
+        };
+        int flash5 = (vs->rpm >= sl_thr[4]) && ((tick/80)%2);
+        for (int i = 0; i < 5; i++) {
+            int lit = (vs->rpm >= sl_thr[i]) && !flash5;
+            int lx  = SCREEN_W - 5*(14+3) + i*17;
+            renderer_draw_rect(lx, 1, 14, 9, lit ? sl_on[i] : RGBA(20,20,30,255));
+        }
+    }
+    renderer_draw_rect(0, 11, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- state machine ---- */
+    int done   = (!perf->timing_active && perf->accel_end_ms > 0);
+    int timing = perf->timing_active;
+
+    /* Auto-start: speed < 5, throttle > 80% */
+    if (!timing && !done && vs->speed_kmh < 5.0f && vs->throttle_pct > 80.0f) {
+        perf->timing_active   = 1;
+        perf->accel_start_ms  = tick;
+        perf->accel_end_ms    = 0;
+        perf->peak_rpm        = vs->rpm;
+    }
+    /* Auto-stop: hit 100 km/h */
+    if (timing && vs->speed_kmh >= 100.0f) {
+        perf->timing_active = 0;
+        perf->accel_end_ms  = tick;
+        float elapsed = (float)(tick - perf->accel_start_ms) / 1000.0f;
+        if (perf->best_0_100 <= 0.0f || elapsed < perf->best_0_100)
+            perf->best_0_100 = elapsed;
+    }
+    if (timing && vs->rpm > perf->peak_rpm)
+        perf->peak_rpm = vs->rpm;
+
+    /* ---- label  y=14..21 ---- */
+    {
+        const char *lbl = "0 - 100 km/h";
+        int tw = font_str_width(lbl, 1);
+        font_draw_str((SCREEN_W - tw) / 2, 14, lbl, AC_DIM, 1);
+    }
+
+    /* ---- timer  y=24..63 (scale=4, 32px tall) ---- */
+    {
+        char buf[12];
+        float elapsed = 0.0f;
+        if (timing)
+            elapsed = (float)(tick - perf->accel_start_ms) / 1000.0f;
+        else if (done)
+            elapsed = (float)(perf->accel_end_ms - perf->accel_start_ms) / 1000.0f;
+
+        uint32_t tc;
+        if (done)        { snprintf(buf, sizeof(buf), "%.2f", elapsed); tc = AC_GREEN; }
+        else if (timing) { snprintf(buf, sizeof(buf), "%.2f", elapsed); tc = RGBA(255,255,255,255); }
+        else             { snprintf(buf, sizeof(buf), "--.-"); tc = AC_DIM; }
+
+        int tw = font_str_width(buf, 4);
+        font_draw_str((SCREEN_W - tw) / 2, 24, buf, tc, 4);
+    }
+
+    /* ---- state text  y=66..73 ---- */
+    {
+        const char *stxt;
+        uint32_t sc;
+        if (done)        { stxt = "DONE";           sc = AC_GREEN; }
+        else if (timing) { stxt = "TIMING...";      sc = RGBA(255,255,255,255); }
+        else             { stxt = "FLOOR IT FROM STOP"; sc = AC_DIM; }
+        int tw = font_str_width(stxt, 1);
+        font_draw_str((SCREEN_W - tw) / 2, 66, stxt, sc, 1);
+    }
+
+    renderer_draw_rect(0, 76, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- speed + gear  y=78..109 ---- */
+    {
+        char sbuf[8], gbuf[4];
+        snprintf(sbuf, sizeof(sbuf), "%.0f", vs->speed_kmh);
+        int cg = (d->gear > 0 && d->gear <= 9) ? d->gear : 0;
+        if (cg == 0) { gbuf[0]='N'; gbuf[1]='\0'; }
+        else         { gbuf[0]=(char)('0'+cg); gbuf[1]='\0'; }
+
+        uint32_t sc = (vs->speed_kmh >= 100.0f) ? AC_GREEN :
+                      (vs->speed_kmh >  80.0f)  ? t->warn  : RGBA(220,220,220,255);
+        int stw = font_str_width(sbuf, 3);
+        font_draw_str((SCREEN_W - stw) / 2 - 20, 78, sbuf, sc, 3);
+        font_draw_str((SCREEN_W + stw) / 2 -  8, 88, "km/h", AC_DIM, 1);
+        font_draw_str((SCREEN_W + stw) / 2 +  8, 78, gbuf, AC_CYAN, 2);
+    }
+    /* speed bar  y=110..119 */
+    renderer_draw_rect(40, 110, 400, 10, RGBA(16,16,24,255));
+    {
+        float pct = vs->speed_kmh / 100.0f;
+        if (pct > 1.0f) pct = 1.0f;
+        int fill = (int)(pct * 400);
+        uint32_t sc = (vs->speed_kmh >= 100.0f) ? AC_GREEN : RGBA(200,200,200,255);
+        if (fill > 0) renderer_draw_rect(40, 110, fill, 10, sc);
+        /* 100 km/h marker */
+        renderer_draw_rect(440, 108, 1, 14, RGBA(255,255,60,200));
+    }
+    font_draw_str(40, 121, "0", AC_DIM, 1);
+    font_draw_str(426, 121, "100", AC_DIM, 1);
+
+    renderer_draw_rect(0, 131, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- best + peak  y=133..143 ---- */
+    {
+        char buf[24];
+        if (perf->best_0_100 > 0.0f)
+            snprintf(buf, sizeof(buf), "BEST  %.2fs", perf->best_0_100);
+        else
+            snprintf(buf, sizeof(buf), "BEST  --");
+        font_draw_str(10, 133, buf, AC_GREEN, 1);
+
+        if (perf->peak_rpm > 0.0f)
+            snprintf(buf, sizeof(buf), "PEAK RPM  %.0f", perf->peak_rpm);
+        else
+            snprintf(buf, sizeof(buf), "PEAK RPM  --");
+        font_draw_str(260, 133, buf, AC_DIM, 1);
+    }
+
+    renderer_draw_rect(0, 145, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- THR + LOAD bars  y=147..176 ---- */
+    {
+        int hw = (SCREEN_W - 8) / 2;
+        font_draw_str(4, 147, "THR", AC_DIM, 1);
+        {
+            char buf[8]; snprintf(buf, sizeof(buf), "%.0f%%", vs->throttle_pct);
+            uint32_t tc = (vs->throttle_pct > 80.0f) ? t->redline :
+                          (vs->throttle_pct > 50.0f) ? t->warn    : AC_GREEN;
+            font_draw_str(30, 147, buf, tc, 1);
+            renderer_draw_rect(4, 157, hw, 8, RGBA(16,16,24,255));
+            int f = (int)(vs->throttle_pct / 100.0f * hw);
+            if (f > 0) renderer_draw_rect(4, 157, f, 8, tc);
+        }
+        int lx = 4 + hw + 4;
+        font_draw_str(lx, 147, "LOAD", AC_DIM, 1);
+        {
+            char buf[8]; snprintf(buf, sizeof(buf), "%.0f%%", vs->engine_load_pct);
+            uint32_t lc = (vs->engine_load_pct > 80.0f) ? t->redline :
+                          (vs->engine_load_pct > 60.0f) ? t->warn    : AC_GREEN;
+            font_draw_str(lx+32, 147, buf, lc, 1);
+            renderer_draw_rect(lx, 157, hw, 8, RGBA(16,16,24,255));
+            int f = (int)(vs->engine_load_pct / 100.0f * hw);
+            if (f > 0) renderer_draw_rect(lx, 157, f, 8, lc);
+        }
+    }
+
+    renderer_draw_rect(0, 167, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- G-force bar  y=169..208 ---- */
+    font_draw_str(6, 169, "G-FORCE", AC_DIM, 1);
+    draw_g_bar(6, 179, 468, d->accel_g, t);
+    font_draw_str(  6, 194, "-2G", AC_DIM, 1);
+    font_draw_str(230, 194, "0G",  AC_DIM, 1);
+    font_draw_str(455, 194, "+2G", AC_DIM, 1);
+
+    renderer_draw_rect(0, 206, SCREEN_W, 1, AC_BORDER);
+
+    /* ---- COOL + VOLT strip  y=208..271 ---- */
+    {
+        char buf[12];
+        uint32_t cc = (vs->coolant_temp_c > 100.0f) ? t->danger :
+                      (vs->coolant_temp_c >  90.0f) ? t->warn   : RGBA(220,220,220,255);
+        snprintf(buf, sizeof(buf), "%.0fC", vs->coolant_temp_c);
+        font_draw_str(6, 210, "COOL", AC_DIM, 1);
+        font_draw_str(38, 210, buf, cc, 1);
+
+        uint32_t vc = (vs->voltage_v < 11.5f) ? t->danger :
+                      (vs->voltage_v < 12.5f) ? t->warn   : AC_DIM;
+        snprintf(buf, sizeof(buf), "%.1fV", vs->voltage_v);
+        font_draw_str(120, 210, "VOLT", AC_DIM, 1);
+        font_draw_str(152, 210, buf, vc, 1);
+    }
+
+    /* X = reset */
+    font_draw_str(6, 220, "X: reset", AC_DIM, 1);
+}
+
+/* ------------------------------------------------------------------ */
 /* Status bar (bottom)                                                 */
 /* ------------------------------------------------------------------ */
 
 void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int connected) {
     const Theme *t = theme_current();
     static const char *mode_names[DASH_MODE_COUNT] = {
-        "DIGITAL", "PERF", "ENGINE", "ECOTRIP", "JDM", "TOUGE", "VTEC", "ARCADE"
+        "DIGITAL", "PERF", "ENGINE", "ECOTRIP", "JDM", "TOUGE", "VTEC", "ARCADE", "DRAG"
     };
 
     renderer_draw_rect(0, 260, SCREEN_W, 12, RGBA(8, 8, 8, 255));
@@ -1379,6 +1627,7 @@ void dashboard_render(const VehicleState *vs, const DerivedState *d, DashMode mo
         case DASH_MODE_TOUGE:       dashboard_render_touge(vs, d);              break;
         case DASH_MODE_VTEC:        dashboard_render_vtec(vs, d);               break;
         case DASH_MODE_ARCADE:      dashboard_render_arcade(vs, d);             break;
+        case DASH_MODE_DRAG:        dashboard_render_drag(vs, d);               break;
         default: break;
     }
 }

@@ -11,6 +11,7 @@ typedef enum {
     DASH_MODE_TOUGE,    /* touge: power band strip, huge gear, shift lights */
     DASH_MODE_VTEC,     /* VTEC: animated badge, RPM/throttle/load bars */
     DASH_MODE_ARCADE,   /* pixel-art sedan, RoR1 style, scrolling road */
+    DASH_MODE_DRAG,     /* 0-100 timer, big speed, shift lights, auto-trigger */
     DASH_MODE_COUNT
 } DashMode;
 
@@ -36,5 +37,7 @@ void dashboard_render_jdm(const VehicleState *vs, const DerivedState *d);
 void dashboard_render_touge(const VehicleState *vs, const DerivedState *d);
 void dashboard_render_vtec(const VehicleState *vs, const DerivedState *d);
 void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d);
+void dashboard_render_drag(const VehicleState *vs, const DerivedState *d);
+void dashboard_drag_reset(void);
 void dashboard_trip_reset_session(void);
 void dashboard_render_status_bar(const VehicleState *vs, DashMode mode, int connected);

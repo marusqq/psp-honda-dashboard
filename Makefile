@@ -24,7 +24,8 @@ OBJS = \
 	src/utils/log.o \
 	src/utils/time.o \
 	src/utils/memory.o \
-	src/utils/font.o
+	src/utils/font.o \
+	src/utils/stats_log.o
 
 # INCDIR is expanded by build.mak with addprefix -I, so do NOT use -I$(INCDIR) here
 INCDIR   = include
