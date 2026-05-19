@@ -7,6 +7,7 @@
 #include "utils/font.h"
 #include "utils/time.h"
 #include "telemetry/units.h"
+#include <psprtc.h>
 
 #define VTEC_RPM_THRESHOLD 5800.0f
 
@@ -1012,34 +1013,35 @@ static void ac_box(int x, int y, int w, int h) {
 }
 
 /* Pixel sedan, front faces right, 60x29px.
-   state: 0=normal blue, 1=high-rpm green, 2=overtemp red.
+   state: 0=normal silver, 1=high-rpm green, 2=overtemp red.
    y+29 = wheel bottom; caller places car so y+29 aligns with road top. */
 static void ac_pixel_car(int x, int y, uint32_t tick, int state) {
     uint32_t body   = (state==1) ? RGBA( 30,140, 60,255) :
-                      (state==2) ? RGBA(170, 40, 40,255) : RGBA( 55,110,200,255);
+                      (state==2) ? RGBA(170, 40, 40,255) : RGBA(192,192,186,255);
     uint32_t roof   = (state==1) ? RGBA( 20,110, 45,255) :
-                      (state==2) ? RGBA(140, 30, 30,255) : RGBA( 45, 90,170,255);
+                      (state==2) ? RGBA(140, 30, 30,255) : RGBA(176,176,170,255);
     uint32_t pillar = (state==1) ? RGBA( 15, 90, 35,255) :
-                      (state==2) ? RGBA(120, 25, 25,255) : RGBA( 35, 75,145,255);
+                      (state==2) ? RGBA(120, 25, 25,255) : RGBA(155,155,149,255);
     uint32_t seam   = (state==1) ? RGBA( 10, 70, 25,255) :
-                      (state==2) ? RGBA(100, 15, 15,255) : RGBA( 35, 80,155,255);
-    uint32_t win    = RGBA( 10,  25,  50, 255);
+                      (state==2) ? RGBA(100, 15, 15,255) : RGBA(138,138,132,255);
+    uint32_t win    = RGBA( 15,  32,  65, 255);
     uint32_t whl    = RGBA( 25,  25,  38, 255);
     uint32_t hub    = RGBA(110, 110, 135, 255);
     uint32_t light  = RGBA(255, 240, 120, 255);
     uint32_t tail   = RGBA(210,  40,  40, 255);
     uint32_t under  = RGBA( 15,  15,  24, 255);
 
-    /* cabin */
-    renderer_draw_rect(x+14, y,    32, 11, roof);
-    renderer_draw_rect(x+16, y+1,  12,  8, win);
-    renderer_draw_rect(x+29, y+1,   3,  8, pillar);
-    renderer_draw_rect(x+32, y+1,  12,  8, win);
+    /* cabin -- low roofline sedan profile */
+    renderer_draw_rect(x+13, y,    34, 10, roof);
+    renderer_draw_rect(x+15, y+1,  11,  7, win);
+    renderer_draw_rect(x+27, y+1,   3,  7, pillar);
+    renderer_draw_rect(x+31, y+1,  13,  7, win);
     /* body */
     renderer_draw_rect(x,    y+10, 60, 16, body);
+    renderer_draw_rect(x+2,  y+15, 56,  1, RGBA(228,228,228,255));  /* chrome waist strip */
     renderer_draw_rect(x+4,  y+22, 52,  4, under);
-    renderer_draw_rect(x+13, y+10,  1, 10, seam);
-    renderer_draw_rect(x+39, y+10,  1, 10, seam);
+    renderer_draw_rect(x+12, y+10,  1, 10, seam);
+    renderer_draw_rect(x+40, y+10,  1, 10, seam);
     /* front face (right side) */
     renderer_draw_rect(x+56, y+11,  4,  6, pillar);
     renderer_draw_rect(x+57, y+12,  2,  3, light);
@@ -1129,6 +1131,47 @@ static void ac_road(int x0, int w, int y0, int h, int offset) {
     }
 }
 
+/* Scrolling street lampposts for night sky. offset = same road scroll accumulator. */
+static void ac_lampposts(int x0, int y_road, int offset) {
+    int spacing = 60;
+    for (int i = -1; i <= 4; i++) {
+        int px  = x0 + i * spacing - (offset % spacing);
+        if (px > x0 + 200 || px + 22 < x0) continue;
+        int top = y_road - 52;
+        if (top < 15) top = 15;
+        /* pole */
+        if (px >= x0 && px + 2 <= x0 + 200)
+            renderer_draw_rect(px, top, 2, y_road - top, RGBA(58, 58, 68, 255));
+        /* horizontal arm extending right */
+        {
+            int ax = px, aw = 18;
+            if (ax < x0)     { aw -= (x0 - ax); ax = x0; }
+            if (ax + aw > x0 + 200) aw = x0 + 200 - ax;
+            if (aw > 0)
+                renderer_draw_rect(ax, top, aw, 2, RGBA(58, 58, 68, 255));
+        }
+        /* lantern */
+        int lx = px + 16, ly = top - 2;
+        if (lx >= x0 && lx + 4 <= x0 + 200)
+            renderer_draw_rect(lx, ly, 4, 5, RGBA(255, 235, 140, 255));
+        /* light cone downward */
+        for (int d = 1; d <= 28; d++) {
+            int cy = top + 2 + d;
+            if (cy >= y_road) break;
+            int half = d * 2 / 3;
+            int cx = lx + 2 - half;
+            int cw = half * 2 + 1;
+            if (cx < x0)     { cw -= (x0 - cx); cx = x0; }
+            if (cx + cw > x0 + 200) cw = x0 + 200 - cx;
+            if (cw <= 0) continue;
+            int v = 55 - d;
+            if (v < 8) v = 8;
+            renderer_draw_rect(cx, cy, cw, 1,
+                               RGBA((uint8_t)v, (uint8_t)v, (uint8_t)(v / 3), 255));
+        }
+    }
+}
+
 void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
     uint32_t     tick = time_now_ms();
     const Theme *t    = theme_current();
@@ -1144,8 +1187,8 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
         uint32_t vc = (vs->voltage_v < 11.5f) ? t->danger :
                       (vs->voltage_v < 12.5f) ? t->warn   : AC_DIM;
         snprintf(buf, sizeof(buf), "%.1fV", vs->voltage_v);
-        font_draw_str(276, 3, "VOLT", AC_DIM, 1);
-        font_draw_str(308, 3, buf, vc, 1);
+        font_draw_str(274, 3, "VOLT", AC_DIM, 1);
+        font_draw_str(314, 3, buf, vc, 1);
     }
     {
         char gbuf[4];
@@ -1153,8 +1196,8 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
         int cg = (d->gear > 0 && d->gear <= 9) ? d->gear : 0;
         if (cg == 0) { gbuf[0] = 'N'; gbuf[1] = '\0'; }
         else         { gbuf[0] = (char)('0' + cg); gbuf[1] = '\0'; }
-        font_draw_str(382, 3, "GEAR", AC_DIM, 1);
-        font_draw_str(414, 3, gbuf, gc, 1);
+        font_draw_str(380, 3, "GEAR", AC_DIM, 1);
+        font_draw_str(420, 3, gbuf, gc, 1);
     }
     if (d->coasting)
         font_draw_str(446, 3, "CST", AC_GREEN, 1);
@@ -1175,8 +1218,33 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
         s_road_px  += vs->speed_kmh * (float)dt * 0.004f;
         if (s_road_px >= 32000.0f) s_road_px -= 32000.0f;
 
-        renderer_draw_rect(0, 15, 200, 103, AC_BG);
-        ac_skyline(0, 118);
+        /* day / night sky based on PSP local clock */
+        {
+            ScePspDateTime rtc_t;
+            int hour = 12;
+            if (sceRtcGetCurrentClockLocalTime(&rtc_t) == 0)
+                hour = (int)rtc_t.hour;
+            int is_night = (hour < 6 || hour >= 20);
+
+            if (is_night) {
+                renderer_draw_rect(0, 15, 200, 103, RGBA(4, 4, 15, 255));
+                static const struct { uint8_t x, y; } stars[] = {
+                    {10,5},{35,18},{60,8},{85,25},{110,4},{135,15},{160,22},{185,9},
+                    {22,30},{75,35},{140,28},{178,40},{50,45},{100,50},{155,48},
+                };
+                int ns = (int)(sizeof(stars) / sizeof(stars[0]));
+                for (int si = 0; si < ns; si++)
+                    renderer_draw_rect((int)stars[si].x, 15 + (int)stars[si].y,
+                                       1, 1, RGBA(180, 180, 200, 255));
+                ac_skyline(0, 118);
+                ac_lampposts(0, 118, (int)s_road_px);
+            } else {
+                renderer_draw_rect(0,  15, 200, 40, RGBA( 22,  68, 162, 255));
+                renderer_draw_rect(0,  55, 200, 40, RGBA( 52, 112, 200, 255));
+                renderer_draw_rect(0,  95, 200, 23, RGBA( 98, 152, 220, 255));
+                ac_skyline(0, 118);
+            }
+        }
         ac_road(0, 200, 118, 30, (int)s_road_px);
 
         /* bounce ±1px at RPM >= 4000 */
@@ -1262,7 +1330,7 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
             renderer_draw_rect(rx + z2, 48, 1, 15, RGBA(255,255,60,200));
         }
         font_draw_str(rx,        63, "0",    AC_DIM, 1);
-        font_draw_str(rx+rw-28,  63, "8000", AC_DIM, 1);
+        font_draw_str(rx+rw-34,  63, "8000", AC_DIM, 1);
 
         renderer_draw_rect(rx, 73, rw, 1, AC_DIM);
 
@@ -1287,7 +1355,7 @@ void dashboard_render_arcade(const VehicleState *vs, const DerivedState *d) {
                 renderer_draw_rect(rx, 94, fill, 10, RGBA(200,200,200,255));
         }
         font_draw_str(rx,       106, "0",   AC_DIM, 1);
-        font_draw_str(rx+rw-18, 106, "240", AC_DIM, 1);
+        font_draw_str(rx+rw-26, 106, "240", AC_DIM, 1);
 
         renderer_draw_rect(rx, 116, rw, 1, AC_DIM);
 
